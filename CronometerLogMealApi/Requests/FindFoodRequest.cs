@@ -1,0 +1,8 @@
+namespace CronometerLogMealApi.Requests;
+
+public record FindFoodRequest
+{
+    public string Query { get; init; } = string.Empty;
+    public string? Tab { get; init; }
+    public AuthPayload Auth { get; init; } = new();
+}
