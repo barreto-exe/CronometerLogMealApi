@@ -23,9 +23,13 @@ public class CronometerHttpClient
         _http.DefaultRequestHeaders.Accept.Clear();
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        _jsonOptions = new JsonSerializerOptions
+        // Use Web defaults to ensure:
+        // - camelCase property names
+        // - camelCase dictionary keys
+        // - case-insensitive deserialization, etc.
+        _jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            // Keep nulls out of payloads unless explicitly set
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
         };
     }
@@ -40,7 +44,7 @@ public class CronometerHttpClient
         => PostModelAsync<AddServingResponse, AddServingRequest>("add_serving", request, ct);
 
     public Task<AddMultiServingResponse> AddMultiServingAsync(AddMultiServingRequest request, CancellationToken ct = default)
-        => PostModelAsync<AddMultiServingResponse, AddMultiServingRequest>("add_multi_serving", request, ct);
+        => PostModelAsync<AddMultiServingResponse, AddMultiServingRequest>("multi_add_serving", request, ct);
 
     public Task<FindFoodResponse> FindFoodAsync(FindFoodRequest request, CancellationToken ct = default)
         => PostModelAsync<FindFoodResponse, FindFoodRequest>("find_food", request, ct);

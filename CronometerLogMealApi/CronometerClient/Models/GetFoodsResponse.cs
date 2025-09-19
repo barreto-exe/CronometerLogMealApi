@@ -1,8 +1,9 @@
+using CronometerLogMealApi.CronometerClient.Models;
 using System.Text.Json;
 
 namespace CronometerLogMealApi.Models;
 
-public class GetFoodsResponse : IRawResponse
+public class GetFoodsResponse
 {
-    public JsonElement Raw { get; set; }
+    public IEnumerable<Food>? Foods { get; set; }
 }
