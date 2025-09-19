@@ -39,6 +39,9 @@ public class CronometerHttpClient
     public Task<AddServingResponse> AddServingAsync(AddServingRequest request, CancellationToken ct = default)
         => PostModelAsync<AddServingResponse, AddServingRequest>("add_serving", request, ct);
 
+    public Task<AddMultiServingResponse> AddMultiServingAsync(AddMultiServingRequest request, CancellationToken ct = default)
+        => PostModelAsync<AddMultiServingResponse, AddMultiServingRequest>("add_multi_serving", request, ct);
+
     public Task<FindFoodResponse> FindFoodAsync(FindFoodRequest request, CancellationToken ct = default)
         => PostModelAsync<FindFoodResponse, FindFoodRequest>("find_food", request, ct);
 
