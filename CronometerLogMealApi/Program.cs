@@ -8,7 +8,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Typed HttpClient for Cronometer API
-builder.Services.AddHttpClient<CronometerLogMealApi.Clients.CronometerHttpClient>(client =>
+builder.Services.AddHttpClient<CronometerLogMealApi.CronometerClient.CronometerHttpClient>(client =>
 {
     client.BaseAddress = new Uri("https://mobile.cronometer.com/api/v2/");
 });
