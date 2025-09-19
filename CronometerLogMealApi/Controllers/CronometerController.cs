@@ -29,7 +29,7 @@ public class CronometerController : CronometerControllerBase
             _ => 1
         };
 
-        var date = DateTime.Now;
+        var date = request.Date;
         var userId = auth.UserId;
         var type = "Serving";
 
@@ -146,7 +146,7 @@ public class CronometerController : CronometerControllerBase
         return 0;
     }
 
-    private Measure GetSimilarMeasureId(IEnumerable<Measure>? measures, string measureName)
+    private static Measure GetSimilarMeasureId(IEnumerable<Measure>? measures, string measureName)
     {
         var defaultMeasure = new Measure()
         {
