@@ -2,6 +2,7 @@
 using CronometerLogMealApi.CronometerClient.Requests;
 using CronometerLogMealApi.Requests;
 using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
 
 namespace CronometerLogMealApi.Controllers;
 
@@ -14,9 +15,8 @@ public class CronometerController : CronometerControllerBase
     }
 
     [HttpPost("Log-meal")]
-    public async Task<IActionResult> LogMeal([FromHeader] AuthPayload auth, [FromBody] LogMealRequest request)
+    public async Task<IActionResult> LogMeal([FromHeader] AuthPayload auth, [FromBody] LogMealRequest request, CancellationToken cancellation)
     {
-        //1 Uncategorized | 65537 Breakfast | 131073 Lunch | 196609 Dinner | 262145 Snacks
         int order = request.Category.ToLower() switch
         {
             "breakfast" => 65537,
@@ -26,12 +26,41 @@ public class CronometerController : CronometerControllerBase
             _ => 1
         };
 
-        var day = DateTime.Now;
+        var date = DateTime.Now;
         var userId = auth.UserId;
         var type = "Serving";
 
-
+        var servingPayload = GetServingPayloadFromRequest(order, date, userId, type, request.Items.FirstOrDefault(), auth, cancellation);
 
         return Ok();
+    }
+
+    private async Task<ServingPayload> GetServingPayloadFromRequest(int order, DateTime date, long userId, string type, MealItem request, AuthPayload auth, CancellationToken cancellation = default)
+    {
+        var result = new ServingPayload()
+        {
+            Order = order,
+            Day = date.ToString("yyyy-MM-dd"),
+            UserId = userId,
+            Type = type,
+        };
+
+        var foodId = GetFoodId(request.Name, auth, cancellation);
+
+        return result;
+    }
+
+    private async Task<string> GetFoodId(string query, AuthPayload auth, CancellationToken cancellationToken)
+    {
+        var httpRequest = new FindFoodRequest()
+        {
+            Query = query,
+            Tab = "CUSTOM",
+            Auth = auth,
+        };
+
+        var customResult = await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken);
+
+        return string.Empty;
     }
 }
