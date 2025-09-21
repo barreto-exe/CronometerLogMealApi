@@ -33,7 +33,7 @@ public class CronometerController : CronometerControllerBase
         var userId = auth.UserId;
         var type = "Serving";
 
-        var servingPayload = await GetServingPayloadFromRequest(order, date, userId, type, request.Items, auth, cancellation);
+        var servingPayload = await GetServingPayloadFromRequest(order, date, userId, type, request.Items, auth, request.LogTime, cancellation);
 
         var result = await cronometerHttpClient.AddMultiServingAsync(servingPayload, cancellation);
 
@@ -61,6 +61,7 @@ public class CronometerController : CronometerControllerBase
         string type, 
         IEnumerable<MealItem> whatsappRequest, 
         AuthPayload auth, 
+        bool? logTime = false,
         CancellationToken cancellation = default)
     {
         var result = new AddMultiServingRequest()
@@ -75,6 +76,7 @@ public class CronometerController : CronometerControllerBase
             {
                 Order = order,
                 Day = date.ToString("yyyy-MM-dd"),
+                Time = logTime == true ? date.ToString("HH:m:s") : string.Empty,
                 UserId = userId,
                 Type = type,
             };
