@@ -15,6 +15,7 @@ A minimal .NET 8 Web API that logs meals to the Cronometer Mobile API v2. It exp
   - Body:
     - `category`: string — breakfast | lunch | dinner | snacks (used to set Cronometer order)
     - `date`: string/date — ISO date (e.g., 2025-09-19). Defaults to now if omitted.
+    - `logTime`: boolean (optional) - If true, logs the time part of the `date`. Defaults to false.
     - `items`: array of meal items
       - `quantity`: number
       - `unit`: string (e.g., g, grams, ml, tbsp)
@@ -42,7 +43,8 @@ Request body:
 ```json
 {
   "category": "lunch",
-  "date": "2025-09-19",
+  "date": "2025-09-21T13:30:00",
+  "logTime": true,
   "items": [
     { "quantity": 150, "unit": "g", "name": "Chicken breast" },
     { "quantity": 1, "unit": "cup", "name": "Brown rice" }
