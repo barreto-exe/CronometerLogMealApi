@@ -19,4 +19,7 @@ public class CronometerController : CronometerControllerBase
         var ok = await cronometerService.LogMealAsync(auth, request, cancellation);
         return ok ? Ok() : BadRequest();
     }
+
+    [HttpGet("health")]
+    public IActionResult Health() => Ok("Healthy");
 }
