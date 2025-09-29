@@ -1,6 +1,8 @@
 using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Services;
+using CronometerLogMealApi.Clients.GeminiClient;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -30,6 +32,14 @@ builder.Services.AddHttpClient<TelegramHttpClient>((sp, client) =>
 // Singleton service to track LastUpdateId and encapsulate Telegram logic
 builder.Services.AddSingleton<TelegramService>();
 builder.Services.AddHostedService<TelegramPollingHostedService>();
+
+// Gemini options + typed HttpClient
+builder.Services.Configure<GeminiClientOptions>(builder.Configuration.GetSection("Gemini"));
+builder.Services.AddHttpClient<GeminiHttpClient>((sp, client) =>
+{
+    var opts = sp.GetRequiredService<IOptions<GeminiClientOptions>>().Value;
+    client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
+});
 
 var app = builder.Build();
 

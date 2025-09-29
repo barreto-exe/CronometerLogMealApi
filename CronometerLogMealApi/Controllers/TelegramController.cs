@@ -1,6 +1,5 @@
 using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
-using CronometerLogMealApi.Clients.TelegramClient.Requests;
 using CronometerLogMealApi.Services;
 using Microsoft.AspNetCore.Mvc;
 
