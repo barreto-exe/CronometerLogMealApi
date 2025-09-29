@@ -24,6 +24,12 @@ public class CronometerService
     /// </summary>
     public async Task<bool> LogMealAsync(AuthPayload auth, LogMealRequest request, CancellationToken cancellation = default)
     {
+        //log auth
+        logger.LogInformation("Logging meal for userId {UserId} with sessionKey {SessionKey}", auth.UserId, auth.Token);
+
+        //log request
+        logger.LogInformation("LogMealRequest: {Request}", JsonSerializer.Serialize(request));
+
         int order = request.Category.ToLower() switch
         {
             "breakfast" => 65537,

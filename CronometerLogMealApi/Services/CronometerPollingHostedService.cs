@@ -122,8 +122,8 @@ public class CronometerPollingHostedService : BackgroundService
         // Proceed with login logic
         await _telegramService.SendMessageAsync(chatId, "Iniciando sesión...", null, ct);
 
-        // var loginResponse = _cronometerClient.LoginMock();
-        var loginResponse = await _cronometerClient.LoginAsync(new(email, password), ct);
+        var loginResponse = _cronometerClient.LoginMock();
+        //var loginResponse = await _cronometerClient.LoginAsync(new(email, password), ct);
         if (loginResponse.Result == "FAIL")
         {
             var reply = "Error de autenticación. Por favor, verifique sus credenciales.";
