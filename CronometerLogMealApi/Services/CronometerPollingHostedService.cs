@@ -122,8 +122,8 @@ public class CronometerPollingHostedService : BackgroundService
         // Proceed with login logic
         await _telegramService.SendMessageAsync(chatId, "Iniciando sesión...", null, ct);
 
-        // var loginResponse = await _cronometerClient.LoginAsync(new(email, password), ct);
-        var loginResponse = _cronometerClient.LoginMock();
+        // var loginResponse = _cronometerClient.LoginMock();
+        var loginResponse = await _cronometerClient.LoginAsync(new(email, password), ct);
         if (loginResponse.Result == "FAIL")
         {
             var reply = "Error de autenticación. Por favor, verifique sus credenciales.";
@@ -168,7 +168,7 @@ public class CronometerPollingHostedService : BackgroundService
         var replyProcessing = "Procesando tu mensaje...";
         await _telegramService.SendMessageAsync(chatId, replyProcessing, null, ct);
 
-        var prompt = await File.ReadAllTextAsync("Clients/GeminiClient/CronometerPrompt.txt", ct);
+        var prompt = GeminiPrompts.CronometerPrompt;
         prompt = prompt.Replace("@Now", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"));
         prompt = prompt.Replace("@UserInput", text);
 
