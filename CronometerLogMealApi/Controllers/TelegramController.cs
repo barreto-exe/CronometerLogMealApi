@@ -1,17 +1,19 @@
 using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
 using CronometerLogMealApi.Clients.TelegramClient.Requests;
+using CronometerLogMealApi.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CronometerLogMealApi.Controllers;
 
 public class TelegramController : CronometerControllerBase
 {
+    private readonly TelegramService _service;
     private readonly TelegramHttpClient _telegram;
-    private static long LastUpdateId = 0;
 
-    public TelegramController(TelegramHttpClient telegram)
+    public TelegramController(TelegramService service, TelegramHttpClient telegram)
     {
+        _service = service;
         _telegram = telegram;
     }
 
@@ -19,20 +21,7 @@ public class TelegramController : CronometerControllerBase
     [HttpGet("updates")]
     public async Task<ActionResult<GetUpdatesResponse?>> GetUpdates([FromQuery] long? offset = null, CancellationToken ct = default)
     {
-        var req = new GetUpdatesRequest { Offset = offset ?? LastUpdateId, Limit = 100, Timeout = 0 };
-        var res = await _telegram.GetUpdatesAsync(req, ct);
-
-        // Set last update id
-        if (res != null && res.Ok && res.Result != null)
-        {
-            var lastUpdate = res.Result.OrderByDescending(u => u.UpdateId).FirstOrDefault();
-            if (lastUpdate != null)
-            {
-                // Store this value in a persistent storage for the next call
-                LastUpdateId = lastUpdate.UpdateId + 1;
-            }
-        }
-
+        var res = await _service.GetTelegramUpdates(offset, ct);
         return Ok(res);
     }
 
@@ -42,12 +31,7 @@ public class TelegramController : CronometerControllerBase
     [HttpPost("send")]
     public async Task<ActionResult<SendMessageResponse?>> Send([FromBody] SendDto input, CancellationToken ct = default)
     {
-        var res = await _telegram.SendMessageAsync(new SendMessageRequest
-        {
-            ChatId = input.ChatId,
-            Text = input.Text,
-            ParseMode = input.ParseMode
-        }, ct);
+        var res = await _service.SendMessageAsync(input.ChatId, input.Text, input.ParseMode, ct);
         return Ok(res);
     }
 }
