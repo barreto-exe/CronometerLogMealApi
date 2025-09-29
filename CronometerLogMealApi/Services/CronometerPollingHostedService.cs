@@ -1,7 +1,11 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using CronometerLogMealApi.Clients.CronometerClient;
+using CronometerLogMealApi.Clients.CronometerClient.Requests;
+using CronometerLogMealApi.Clients.GeminiClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
 using CronometerLogMealApi.Models;
+using CronometerLogMealApi.Requests;
 
 namespace CronometerLogMealApi.Services;
 
@@ -13,12 +17,16 @@ public class CronometerPollingHostedService : BackgroundService
     private readonly ILogger<CronometerPollingHostedService> _logger;
     private readonly TelegramService _telegramService;
     private readonly CronometerHttpClient _cronometerClient;
+    private readonly GeminiHttpClient _geminiClient;
+    private readonly CronometerService _cronometerService;
 
-    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient)
+    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient, GeminiHttpClient geminiClient, CronometerService cronometerService)
     {
         _logger = logger;
         _telegramService = service;
         _cronometerClient = cronometerClient;
+        _geminiClient = geminiClient;
+        _cronometerService = cronometerService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -106,7 +114,7 @@ public class CronometerPollingHostedService : BackgroundService
 
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
         {
-            var reply = "Formato de logueo inválido. Use: /login <email> <password>";
+            var reply = "Formato de logueo inválido. Use: <b>/login &lt;email&gt; &lt;password&gt;</b>";
             await _telegramService.SendMessageAsync(chatId, reply, null, ct);
             return;
         }
@@ -127,7 +135,7 @@ public class CronometerPollingHostedService : BackgroundService
         {
             Email = email,
             Password = password,
-            UserId = loginResponse.UserId.ToString(),
+            UserId = loginResponse.UserId,
             SessionKey = loginResponse.SessionKey,
         };
 
@@ -145,8 +153,91 @@ public class CronometerPollingHostedService : BackgroundService
 
     private async Task HandleLogMessageAsync(string chatId, string text, CancellationToken ct)
     {
-        var reply = "Logging functionality is not yet implemented. Please check back later.";
-        await _telegramService.SendMessageAsync(chatId, reply, null, ct);
+        // Check if user is logged in
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) ||
+            userInfo == null ||
+            string.IsNullOrWhiteSpace(userInfo.SessionKey) ||
+            userInfo.UserId == null)
+        {
+            var reply = "No estás autenticado. Por favor, inicia sesión usando el comando:\n" +
+                        "<b>/login &lt;email&gt; &lt;password&gt;</b>";
+            await _telegramService.SendMessageAsync(chatId, reply, "HTML", ct);
+            return;
+        }
+
+        var replyProcessing = "Procesando tu mensaje...";
+        await _telegramService.SendMessageAsync(chatId, replyProcessing, null, ct);
+
+        var prompt = await File.ReadAllTextAsync("Clients/GeminiClient/CronometerPrompt.txt", ct);
+        prompt = prompt.Replace("@Now", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"));
+        prompt = prompt.Replace("@UserInput", text);
+
+        try
+        {
+            var geminiResponse = await _geminiClient.GenerateTextAsync(prompt, ct);
+            var foodInfo = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault();
+
+            if (foodInfo == null ||
+                string.IsNullOrWhiteSpace(foodInfo.Text) ||
+                foodInfo.Text.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+            {
+                var errorReply = "No se pudo procesar tu mensaje. Por favor, intenta nuevamente.";
+                await _telegramService.SendMessageAsync(chatId, errorReply, null, ct);
+                return;
+            }
+
+            var logMealRequest = JsonSerializer.Deserialize<LogMealRequest>(RemoveMarkdown(foodInfo.Text), new JsonSerializerOptions()
+            {
+                PropertyNameCaseInsensitive = true
+            });
+            var logSuccess = await _cronometerService.LogMealAsync(new AuthPayload
+            {
+                UserId = userInfo.UserId.Value,
+                Token = userInfo.SessionKey
+            }, logMealRequest!, ct);
+
+            if (logSuccess)
+            {
+                var successReply = "Comida registrada exitosamente.";
+                await _telegramService.SendMessageAsync(chatId, successReply, null, ct);
+            }
+            else
+            {
+                var errorReply = "No se pudo registrar la comida. Por favor, intenta nuevamente.";
+                await _telegramService.SendMessageAsync(chatId, errorReply, null, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generating content with Gemini for chatId {ChatId}", chatId);
+            var errorReply = "Algo falló, revisa el contenido del mensaje o logueate de nuevo. Luego, vuelve a intentar.";
+            await _telegramService.SendMessageAsync(chatId, errorReply, null, ct);
+            return;
+        }
     }
 
+    private string RemoveMarkdown(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return text ?? string.Empty;
+
+        if (text.StartsWith("```json"))
+        {
+            text = text.Substring("```json".Length);
+        }
+        if (text.StartsWith("```"))
+        {
+            text = text.Substring("```".Length);
+        }
+        if (text.EndsWith("```"))
+        {
+            text = text.Substring(0, text.Length - "```".Length);
+        }
+
+        var noBold = text.Replace("**", "").Replace("__", "");
+        var noItalics = noBold.Replace("*", "").Replace("_", "");
+        var noInlineCode = noItalics.Replace("`", "");
+        var noCodeBlock = noInlineCode.Replace("```", "");
+        return noCodeBlock;
+    }
 }
