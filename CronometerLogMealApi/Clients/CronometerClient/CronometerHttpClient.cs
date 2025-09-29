@@ -39,7 +39,7 @@ public class CronometerHttpClient
         return new LoginResponse
         {
             Result = "SUCCESS",
-            UserId = 11160301,
+            Id = 11160301,
             SessionKey = "4b11fb7658a832eadbe7582195a92498"
         };
     }
