@@ -1,0 +1,152 @@
+using System.Collections.Concurrent;
+using CronometerLogMealApi.Clients.CronometerClient;
+using CronometerLogMealApi.Clients.TelegramClient.Models;
+using CronometerLogMealApi.Models;
+
+namespace CronometerLogMealApi.Services;
+
+public class CronometerPollingHostedService : BackgroundService
+{
+    private readonly TimeSpan _interval = TimeSpan.FromMilliseconds(500);
+    private readonly ConcurrentDictionary<string, CronometerUserInfo> _userSessions = new();
+
+    private readonly ILogger<CronometerPollingHostedService> _logger;
+    private readonly TelegramService _telegramService;
+    private readonly CronometerHttpClient _cronometerClient;
+
+    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient)
+    {
+        _logger = logger;
+        _telegramService = service;
+        _cronometerClient = cronometerClient;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Ensure service is initialized
+        await _telegramService.InitAsync(stoppingToken);
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var res = await _telegramService.GetTelegramUpdates(null, stoppingToken);
+
+                if (res?.Ok == true && res.Result is { Count: > 0 })
+                {
+                    foreach (var update in res.Result)
+                    {
+                        await HandleMessageAsync(update, stoppingToken);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error while polling Telegram updates");
+            }
+
+            try
+            {
+                await Task.Delay(_interval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // ignore
+            }
+        }
+    }
+
+    private async Task HandleMessageAsync(TelegramUpdate? update, CancellationToken ct)
+    {
+        if (update == null) return;
+
+        var msg = update.Message ?? update.EditedMessage;
+        var text = msg?.Text;
+        var chatId = msg?.Chat?.Id;
+        
+        if (!string.IsNullOrWhiteSpace(text) && chatId.HasValue)
+        {
+            _logger.LogInformation("[Telegram] {ChatId}: {Text}", chatId.Value, text);
+
+            if (IsLoginMessage(text))
+            {
+                await HandleLoginAsync(chatId.Value.ToString(), text, ct);
+            }
+            else
+            {
+                await HandleLogMessageAsync(chatId.Value.ToString(), text, ct);
+            }
+        }
+    }
+
+    private static bool IsLoginMessage(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var lower = text.Trim().ToLowerInvariant();
+        return lower.Contains("login") || lower.Contains("log in") || lower.Contains("sign in");
+    }
+
+    private async Task HandleLoginAsync(string chatId, string text, CancellationToken ct)
+    {
+        //Validate that split text has at least 3 parts
+        if (string.IsNullOrWhiteSpace(chatId) ||
+            !text.Contains("login", StringComparison.OrdinalIgnoreCase) ||
+            text.Split(' ').Length < 3)
+        {
+            var reply = "Formato de logueo inválido. Use: /login <email> <password>";
+            await _telegramService.SendMessageAsync(chatId, reply, null, ct);
+            return;
+        }
+
+        // Extract email and password from the message
+        var email = text.Split(' ').LastOrDefault(t => t.Contains('@'));
+        var password = text.Split(' ')[2].Trim();
+
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            var reply = "Formato de logueo inválido. Use: /login <email> <password>";
+            await _telegramService.SendMessageAsync(chatId, reply, null, ct);
+            return;
+        }
+
+        // Proceed with login logic
+        await _telegramService.SendMessageAsync(chatId, "Iniciando sesión...", null, ct);
+
+        // var loginResponse = await _cronometerClient.LoginAsync(new(email, password), ct);
+        var loginResponse = _cronometerClient.LoginMock();
+        if (loginResponse.Result == "FAIL")
+        {
+            var reply = "Error de autenticación. Por favor, verifique sus credenciales.";
+            await _telegramService.SendMessageAsync(chatId, reply, null, ct);
+            return;
+        }
+
+        var userInfo = new CronometerUserInfo
+        {
+            Email = email,
+            Password = password,
+            UserId = loginResponse.UserId.ToString(),
+            SessionKey = loginResponse.SessionKey,
+        };
+
+        _userSessions.AddOrUpdate(chatId, userInfo, (key, oldValue) => userInfo);
+
+        var successReply =
+            "Inicio de sesión exitoso. Ahora puedes registrar tus comidas enviando mensajes de texto.\n" +
+            "Recuerda, puedes indicar los siguientes datos para cada comida:\n\n" +
+            "<b>✅ Hora de la comida.</b>\n\n" +
+            "<b>✅ Tipo de comida</b>: Desayuno, Almuerzo, Cena, Merienda.\n\n" +
+            "<b>✅ Pesos por cada comida o tamaño de la porción</b>: Por ejemplo, <i>70 gr de zanahoria, " +
+            "2 HUEVOS PEQUEÑOS, 2 tortillas de harina de trigo, 2 cucharadas de aceite de oliva, etc.</i>";
+        await _telegramService.SendMessageAsync(chatId, successReply, "HTML", ct);
+    }
+
+    private async Task HandleLogMessageAsync(string chatId, string text, CancellationToken ct)
+    {
+        var reply = "Logging functionality is not yet implemented. Please check back later.";
+        await _telegramService.SendMessageAsync(chatId, reply, null, ct);
+    }
+
+}

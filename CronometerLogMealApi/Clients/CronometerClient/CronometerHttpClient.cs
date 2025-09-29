@@ -34,6 +34,16 @@ public class CronometerHttpClient
         };
     }
 
+    public LoginResponse LoginMock()
+    {
+        return new LoginResponse
+        {
+            Result = "SUCCESS",
+            UserId = 11160301,
+            SessionKey = "4b11fb7658a832eadbe7582195a92498"
+        };
+    }
+
     public Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken ct = default)
         => PostModelAsync<LoginResponse, LoginRequest>("login", request, ct);
 

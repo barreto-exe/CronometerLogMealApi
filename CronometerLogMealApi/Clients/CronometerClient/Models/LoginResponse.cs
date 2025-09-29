@@ -2,7 +2,9 @@ using System.Text.Json;
 
 namespace CronometerLogMealApi.Clients.CronometerClient.Models;
 
-public class LoginResponse : IRawResponse
+public class LoginResponse
 {
-    public JsonElement Raw { get; set; }
+    public string Result { get; set; } = string.Empty;
+    public long UserId { get; set; }
+    public string SessionKey { get; set; } = string.Empty;
 }

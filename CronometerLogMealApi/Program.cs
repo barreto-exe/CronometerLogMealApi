@@ -31,7 +31,7 @@ builder.Services.AddHttpClient<TelegramHttpClient>((sp, client) =>
 
 // Singleton service to track LastUpdateId and encapsulate Telegram logic
 builder.Services.AddSingleton<TelegramService>();
-builder.Services.AddHostedService<TelegramPollingHostedService>();
+builder.Services.AddHostedService<CronometerPollingHostedService>();
 
 // Gemini options + typed HttpClient
 builder.Services.Configure<GeminiClientOptions>(builder.Configuration.GetSection("Gemini"));
