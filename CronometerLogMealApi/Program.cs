@@ -1,4 +1,5 @@
 using CronometerLogMealApi.Clients.CronometerClient;
+using CronometerLogMealApi.Clients.TelegramClient;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,6 +17,18 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddHttpClient<CronometerHttpClient>(client =>
 {
     client.BaseAddress = new Uri("https://mobile.cronometer.com/api/v2/");
+});
+
+// Typed HttpClient for Telegram Bot API
+builder.Services.AddHttpClient<TelegramHttpClient>((sp, client) =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    var botToken = cfg["Telegram:BotToken"];
+    if (string.IsNullOrWhiteSpace(botToken))
+    {
+        throw new InvalidOperationException("Telegram:BotToken is not configured.");
+    }
+    client.BaseAddress = new Uri($"https://api.telegram.org/bot{botToken}/");
 });
 
 var app = builder.Build();
