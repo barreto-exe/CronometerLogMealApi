@@ -363,3 +363,4 @@ MigrationBackup/
 FodyWeavers.xsd
 nutriapp.api/appsettings.Development.json
 CronometerAPI/appsettings.json
+CronometerLogMealApi/appsettings.json

@@ -1,4 +1,6 @@
 using CronometerLogMealApi.Clients.CronometerClient;
+using CronometerLogMealApi.Clients.TelegramClient;
+using CronometerLogMealApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +19,17 @@ builder.Services.AddHttpClient<CronometerHttpClient>(client =>
 {
     client.BaseAddress = new Uri("https://mobile.cronometer.com/api/v2/");
 });
+
+// Typed HttpClient for Telegram Bot API
+var botToken = builder.Configuration["Telegram:BotToken"];
+builder.Services.AddHttpClient<TelegramHttpClient>((sp, client) =>
+{
+    client.BaseAddress = new Uri($"https://api.telegram.org/bot{botToken}/");
+});
+
+// Singleton service to track LastUpdateId and encapsulate Telegram logic
+builder.Services.AddSingleton<TelegramService>();
+builder.Services.AddHostedService<TelegramPollingHostedService>();
 
 var app = builder.Build();
 
