@@ -186,6 +186,8 @@ public class CronometerPollingHostedService : BackgroundService
                 return;
             }
 
+            _logger.LogInformation("Gemini response for chatId {ChatId}: {Response}", chatId, foodInfo.Text);
+
             var logMealRequest = JsonSerializer.Deserialize<LogMealRequest>(RemoveMarkdown(foodInfo.Text), new JsonSerializerOptions()
             {
                 PropertyNameCaseInsensitive = true
