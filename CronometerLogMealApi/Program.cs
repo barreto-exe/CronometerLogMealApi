@@ -20,14 +20,9 @@ builder.Services.AddHttpClient<CronometerHttpClient>(client =>
 });
 
 // Typed HttpClient for Telegram Bot API
+var botToken = builder.Configuration["Telegram:BotToken"];
 builder.Services.AddHttpClient<TelegramHttpClient>((sp, client) =>
 {
-    var cfg = sp.GetRequiredService<IConfiguration>();
-    var botToken = cfg["Telegram:BotToken"];
-    if (string.IsNullOrWhiteSpace(botToken))
-    {
-        throw new InvalidOperationException("Telegram:BotToken is not configured.");
-    }
     client.BaseAddress = new Uri($"https://api.telegram.org/bot{botToken}/");
 });
 

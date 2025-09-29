@@ -33,6 +33,12 @@ public class TelegramHttpClient
     public Task<SendMessageResponse?> SendMessageAsync(SendMessageRequest request, CancellationToken ct = default)
         => PostModelAsync<SendMessageResponse, SendMessageRequest>("sendMessage", request, ct);
 
+    /// <summary>
+    /// Retrieves incoming updates for the bot (polling).
+    /// </summary>
+    public Task<GetUpdatesResponse?> GetUpdatesAsync(GetUpdatesRequest request, CancellationToken ct = default)
+        => PostModelAsync<GetUpdatesResponse, GetUpdatesRequest>("getUpdates", request, ct);
+
     private async Task<TResponse?> PostModelAsync<TResponse, TRequest>(string relativePath, TRequest payload, CancellationToken ct)
     {
         using var content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json");
