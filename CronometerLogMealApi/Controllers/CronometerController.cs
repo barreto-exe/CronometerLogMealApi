@@ -1,6 +1,6 @@
-﻿using CronometerLogMealApi.CronometerClient;
-using CronometerLogMealApi.CronometerClient.Models;
-using CronometerLogMealApi.CronometerClient.Requests;
+﻿using CronometerLogMealApi.Clients.CronometerClient;
+using CronometerLogMealApi.Clients.CronometerClient.Models;
+using CronometerLogMealApi.Clients.CronometerClient.Requests;
 using CronometerLogMealApi.Requests;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;

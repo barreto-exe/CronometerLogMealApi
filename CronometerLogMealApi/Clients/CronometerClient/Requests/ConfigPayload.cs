@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace CronometerLogMealApi.CronometerClient.Requests;
+namespace CronometerLogMealApi.Clients.CronometerClient.Requests;
 
 public record ConfigPayload
 {

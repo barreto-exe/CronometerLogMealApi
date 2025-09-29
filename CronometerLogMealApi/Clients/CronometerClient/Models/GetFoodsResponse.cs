@@ -1,7 +1,6 @@
-using CronometerLogMealApi.CronometerClient.Models;
 using System.Text.Json;
 
-namespace CronometerLogMealApi.Models;
+namespace CronometerLogMealApi.Clients.CronometerClient.Models;
 
 public class GetFoodsResponse
 {

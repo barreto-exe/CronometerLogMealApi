@@ -1,4 +1,4 @@
-﻿namespace CronometerLogMealApi.CronometerClient.Models;
+﻿namespace CronometerLogMealApi.Clients.CronometerClient.Models;
 
 public class Food
 {

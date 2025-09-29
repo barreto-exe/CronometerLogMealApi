@@ -1,4 +1,4 @@
-namespace CronometerLogMealApi.CronometerClient.Requests;
+namespace CronometerLogMealApi.Clients.CronometerClient.Requests;
 
 public record GetFoodsRequest
 {

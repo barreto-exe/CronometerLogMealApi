@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace CronometerLogMealApi.Models;
+namespace CronometerLogMealApi.Clients.CronometerClient.Models;
 
 public class UpdateOrderResponse : IRawResponse
 {

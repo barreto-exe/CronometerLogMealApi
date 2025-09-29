@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 
-namespace CronometerLogMealApi.CronometerClient.Requests;
+namespace CronometerLogMealApi.Clients.CronometerClient.Requests;
 
 public record AuthPayload
 {

@@ -1,10 +1,10 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using CronometerLogMealApi.CronometerClient.Requests;
-using CronometerLogMealApi.Models;
+using CronometerLogMealApi.Clients.CronometerClient.Models;
+using CronometerLogMealApi.Clients.CronometerClient.Requests;
 
-namespace CronometerLogMealApi.CronometerClient;
+namespace CronometerLogMealApi.Clients.CronometerClient;
 
 /// <summary>
 /// Typed HTTP client for Cronometer Mobile API v2.
