@@ -7,4 +7,6 @@ public class Food
     public long? MeasureId { get; set; }
     public long? DefaultMeasureId { get; set; }
     public IEnumerable<Measure>? Measures { get; set; }
+
+    public override string ToString() => $"{Id} - {Name}";
 }

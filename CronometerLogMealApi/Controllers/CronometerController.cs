@@ -113,35 +113,32 @@ public class CronometerController : CronometerControllerBase
             Tab = "CUSTOM", //CUSTOM | COMMON_FOODS | SUPPLEMENTS | FAVOURITES | ALL
             Auth = auth,
         };
-        var customResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
+        var customResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
         if (customResult != null)
         {
-            allResults.AddRange(customResult);
+            allResults.Add(customResult);
         }
 
         httpRequest.Tab = "FAVOURITES";
-        var favouriteResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
+        var favouriteResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
         if (favouriteResult != null)
         {
-            allResults.AddRange(favouriteResult);
+            allResults.Add(favouriteResult);
         }
 
         httpRequest.Tab = "COMMON_FOODS";
-        var commonResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
+        var commonResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
         if (commonResult != null)
         {
-            allResults.AddRange(commonResult);
+            allResults.Add(commonResult);
         }
 
         httpRequest.Tab = "SUPPLEMENTS";
-        var supplementResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
+        var supplementResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
         if (supplementResult != null)
         {
-            allResults.AddRange(supplementResult);
+            allResults.Add(supplementResult);
         }
-
-        //httpRequest.Tab = "ALL";
-        //var allResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
 
         var dice = new SorensenDice();
 
@@ -157,6 +154,14 @@ public class CronometerController : CronometerControllerBase
         if (bestMatch != null && bestMatch.Similarity > 0.3) // threshold to avoid bad matches
         {
             return bestMatch.Food.Id;
+        }
+
+        httpRequest.Tab = "ALL";
+        var allResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+
+        if (allResult != null)
+        {
+            return allResult.Id;
         }
 
         return 0;
