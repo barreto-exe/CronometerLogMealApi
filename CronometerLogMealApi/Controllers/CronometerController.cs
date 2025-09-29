@@ -2,6 +2,7 @@
 using CronometerLogMealApi.Clients.CronometerClient.Models;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
 using CronometerLogMealApi.Requests;
+using F23.StringSimilarity;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
@@ -104,45 +105,58 @@ public class CronometerController : CronometerControllerBase
 
     private async Task<long> GetFoodId(string query, AuthPayload auth, CancellationToken cancellationToken)
     {
+        var allResults = new List<Food>();
+
         var httpRequest = new FindFoodRequest()
         {
             Query = query,
             Tab = "CUSTOM", //CUSTOM | COMMON_FOODS | SUPPLEMENTS | FAVOURITES | ALL
             Auth = auth,
         };
-
-        var customResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+        var customResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
         if (customResult != null)
         {
-            return customResult.Id;
+            allResults.AddRange(customResult);
         }
 
         httpRequest.Tab = "FAVOURITES";
-        var favouriteResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+        var favouriteResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
         if (favouriteResult != null)
         {
-            return favouriteResult.Id;
+            allResults.AddRange(favouriteResult);
         }
 
         httpRequest.Tab = "COMMON_FOODS";
-        var commonResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+        var commonResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
         if (commonResult != null)
         {
-            return commonResult.Id;
+            allResults.AddRange(commonResult);
         }
 
         httpRequest.Tab = "SUPPLEMENTS";
-        var supplementResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+        var supplementResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods;
         if (supplementResult != null)
         {
-            return supplementResult.Id;
+            allResults.AddRange(supplementResult);
         }
 
-        httpRequest.Tab = "ALL";
-        var allResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
-        if (allResult != null)
+        //httpRequest.Tab = "ALL";
+        //var allResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+
+        var dice = new SorensenDice();
+
+        var bestMatch = allResults
+            .Select(food => new
+            {
+                Food = food,
+                Similarity = dice.Similarity(food.Name, query)
+            })
+            .OrderByDescending(x => x.Similarity)
+            .FirstOrDefault();
+
+        if (bestMatch != null && bestMatch.Similarity > 0.3) // threshold to avoid bad matches
         {
-            return allResult.Id;
+            return bestMatch.Food.Id;
         }
 
         return 0;
