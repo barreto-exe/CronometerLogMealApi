@@ -167,9 +167,13 @@ public class CronometerPollingHostedService : BackgroundService
 
         var replyProcessing = "Procesando tu mensaje...";
         await _telegramService.SendMessageAsync(chatId, replyProcessing, null, ct);
+        
+        // With Venezuela time (America/Caracas):
+        var venezuelaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Venezuela Standard Time");
+        var venezuelaNow = TimeZoneInfo.ConvertTime(DateTime.UtcNow, venezuelaTimeZone);
 
         var prompt = GeminiPrompts.CronometerPrompt;
-        prompt = prompt.Replace("@Now", DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"));
+        prompt = prompt.Replace("@Now", venezuelaNow.ToString("yyyy-MM-ddTHH:mm:ss"));
         prompt = prompt.Replace("@UserInput", text);
 
         try
@@ -205,7 +209,9 @@ public class CronometerPollingHostedService : BackgroundService
             }
             else
             {
-                var errorReply = "No se pudo registrar la comida. Por favor, intenta nuevamente.";
+                var errorReply = 
+                    "No se pudo registrar la comida. Es posible que no algún alimento no se haya conseguido en la base de datos. " +
+                    "Por favor, intenta nuevamente.";
                 await _telegramService.SendMessageAsync(chatId, errorReply, null, ct);
             }
         }

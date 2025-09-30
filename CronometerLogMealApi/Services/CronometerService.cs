@@ -59,6 +59,8 @@ public class CronometerService
             return false;
         }
 
+        logger.LogInformation("Successfully logged meal. Response: {Response}", result?.Raw.ToString());
+
         return true;
     }
 
