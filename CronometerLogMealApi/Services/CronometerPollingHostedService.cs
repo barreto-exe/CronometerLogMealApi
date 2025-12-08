@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
+using CronometerLogMealApi.Clients.OpenAIClient;
 using CronometerLogMealApi.Clients.GeminiClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
 using CronometerLogMealApi.Models;
@@ -17,15 +18,15 @@ public class CronometerPollingHostedService : BackgroundService
     private readonly ILogger<CronometerPollingHostedService> _logger;
     private readonly TelegramService _telegramService;
     private readonly CronometerHttpClient _cronometerClient;
-    private readonly GeminiHttpClient _geminiClient;
+    private readonly OpenAIHttpClient _openAIClient;
     private readonly CronometerService _cronometerService;
 
-    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient, GeminiHttpClient geminiClient, CronometerService cronometerService)
+    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient, OpenAIHttpClient openAIClient, CronometerService cronometerService)
     {
         _logger = logger;
         _telegramService = service;
         _cronometerClient = cronometerClient;
-        _geminiClient = geminiClient;
+        _openAIClient = openAIClient;
         _cronometerService = cronometerService;
     }
 
@@ -178,21 +179,20 @@ public class CronometerPollingHostedService : BackgroundService
 
         try
         {
-            var geminiResponse = await _geminiClient.GenerateTextAsync(prompt, ct);
-            var foodInfo = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault();
+            var openAIResponse = await _openAIClient.GenerateTextAsync(prompt, ct);
+            var foodInfo = openAIResponse?.Choices?.FirstOrDefault()?.Message?.Content;
 
-            if (foodInfo == null ||
-                string.IsNullOrWhiteSpace(foodInfo.Text) ||
-                foodInfo.Text.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(foodInfo) ||
+                foodInfo.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
             {
                 var errorReply = "No se pudo procesar tu mensaje. Por favor, intenta nuevamente.";
                 await _telegramService.SendMessageAsync(chatId, errorReply, null, ct);
                 return;
             }
 
-            _logger.LogInformation("Gemini response for chatId {ChatId}: {Response}", chatId, foodInfo.Text);
+            _logger.LogInformation("OpenAI response for chatId {ChatId}: {Response}", chatId, foodInfo);
 
-            var logMealRequest = JsonSerializer.Deserialize<LogMealRequest>(RemoveMarkdown(foodInfo.Text), new JsonSerializerOptions()
+            var logMealRequest = JsonSerializer.Deserialize<LogMealRequest>(RemoveMarkdown(foodInfo), new JsonSerializerOptions()
             {
                 PropertyNameCaseInsensitive = true
             });

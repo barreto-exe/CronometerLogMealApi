@@ -1,58 +1,108 @@
-# Cronometer Log Meal API
+# Cronometer Log Meal API & Telegram Bot
 
-A minimal .NET 8 Web API that logs meals to the Cronometer Mobile API v2. It exposes a single endpoint that translates a simple meal payload into Cronometer servings and posts them in one shot.
+A .NET 8 Web API and Background Service that acts as a bridge between **Telegram** and **Cronometer**. It allows users to log meals into Cronometer by simply sending natural language messages to a Telegram bot. The system uses AI (LLMs) to parse the text into structured nutritional data.
 
-## Tech stack
-- ASP.NET Core 8 Web API
-- Typed HttpClient for Cronometer Mobile API v2
-- Swagger/OpenAPI for interactive docs (in Development)
+## Features
 
-## Endpoint
-- POST `/api/Cronometer/Log-meal`
-  - Headers:
-    - `X-User-Id`: long (Cronometer user ID)
-    - `X-Auth-Token`: string (Cronometer auth token)
-  - Body:
-    - `category`: string — breakfast | lunch | dinner | snacks (used to set Cronometer order)
-    - `date`: string/date — ISO date (e.g., 2025-09-19). Defaults to now if omitted.
-    - `logTime`: boolean (optional) - If true, logs the time part of the `date`. Defaults to false.
-    - `items`: array of meal items
-      - `quantity`: number
-      - `unit`: string (e.g., g, grams, ml, tbsp)
-      - `name`: string (food name to search in Cronometer)
+- **Telegram Integration**:
+  - **Login**: Authenticate with Cronometer directly from Telegram using `/login <email> <password>`.
+  - **Natural Language Logging**: Send messages like "Breakfast: 2 eggs and a slice of toast" or "Almuerzo: 200g de carne y ensalada".
+  - **Feedback**: The bot replies with the status of the operation.
 
-### Behavior
-- Resolves each item by searching Cronometer foods (CUSTOM → FAVOURITES → COMMON_FOODS → SUPPLEMENTS → ALL).
-- Selects a matching measure (exact match, contains, or falls back to grams `g`).
-- Builds a multi-serving payload and posts to Cronometer `multi_add_serving`.
-- Returns `200 OK` on success, `400 Bad Request` if Cronometer responds with `result=fail`.
+- **AI-Powered Parsing**:
+  - Uses an AI client (configured via OpenAI-compatible options) to interpret meal descriptions.
+  - Extracts meal category (Breakfast, Lunch, Dinner, Snack), date/time, and food items with quantities and units.
 
-## Quickstart
-1. Ensure .NET 8 SDK is installed.
-2. Run the API (Development enables Swagger UI):
-   - Via VS/VS Code F5, or
-   - `dotnet run` in `CronometerLogMealApi/`.
-3. Open Swagger UI at the app URL (shown in console) and try `POST /api/Cronometer/Log-meal`.
+- **Cronometer Client**:
+  - Reverse-engineered typed HttpClient for Cronometer Mobile API v2.
+  - **Smart Food Search**: Searches foods in a specific order (Custom → Favorites → Common → Supplements → All).
+  - **Unit Matching**: Intelligently matches user-provided units (e.g., "cup", "g", "oz") to Cronometer's available measures.
+  - **Multi-Add**: Logs multiple items in a single request.
 
-### Example
-Headers:
-- `X-User-Id: 123456`
-- `X-Auth-Token: <token>`
+- **Web API**:
+  - Swagger/OpenAPI support for testing endpoints.
+  - Endpoints for manual logging and debugging.
 
-Request body:
+## Tech Stack
+
+- **Framework**: .NET 8 (ASP.NET Core Web API + Worker Service)
+- **Architecture**:
+  - `CronometerPollingHostedService`: Background service that polls Telegram updates.
+  - `CronometerService`: Core logic for interacting with Cronometer.
+  - `TelegramService`: Handles Telegram API interactions.
+  - `OpenAIClient` / `GeminiClient`: Handles AI text generation.
+- **Libraries**:
+  - `F23.StringSimilarity`: For fuzzy matching of unit names.
+  - `Swashbuckle.AspNetCore`: For Swagger documentation.
+
+## Configuration
+
+Create an `appsettings.json` file in the root of the project (or use User Secrets) with the following structure.
+
+> **Note**: The project currently uses an `OpenAIHttpClient` in the hosted service, so you must configure the `OpenAI` section, even if you are pointing it to a different provider like Gemini (via an OpenAI-compatible endpoint) or LocalAI.
+
 ```json
 {
-  "category": "lunch",
-  "date": "2025-09-21T13:30:00",
-  "logTime": true,
-  "items": [
-    { "quantity": 150, "unit": "g", "name": "Chicken breast" },
-    { "quantity": 1, "unit": "cup", "name": "Brown rice" }
-  ]
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "Telegram": {
+    "BotToken": "YOUR_TELEGRAM_BOT_TOKEN"
+  },
+  "OpenAI": {
+    "ApiKey": "YOUR_API_KEY",
+    "Model": "gpt-4o-mini", 
+    "BaseUrl": "https://api.openai.com/v1" 
+  },
+  "Gemini": {
+    "ApiKey": "YOUR_GEMINI_API_KEY",
+    "Model": "gemini-2.5-pro",
+    "BaseUrl": "https://generativelanguage.googleapis.com/v1beta"
+  }
 }
 ```
 
-## Notes
-- Base address for Cronometer client is configured to `https://mobile.cronometer.com/api/v2/` in `Program.cs`.
-- The API inspects Cronometer response JSON for a `result: fail` to flag failures.
-- You can customize measure matching in `CronometerController.GetSimilarMeasureId`.
+*   **Telegram**: Get your bot token from @BotFather.
+*   **OpenAI**: Used by the main bot logic to parse meals. You can point `BaseUrl` to other compatible services.
+*   **Gemini**: Used by the `GeminiController` for specific testing endpoints.
+
+## Running the Project
+
+1.  **Prerequisites**:
+    *   .NET 8 SDK installed.
+    *   A Cronometer account.
+    *   A Telegram Bot Token.
+    *   An API Key for OpenAI or Gemini.
+
+2.  **Start the Application**:
+    ```bash
+    cd CronometerLogMealApi
+    dotnet run
+    ```
+
+3.  **Using the Bot**:
+    *   Open your bot in Telegram.
+    *   **Login**: Send `/login user@email.com mypassword`.
+    *   **Log a Meal**: Send a message describing your food.
+        *   *Example*: "Desayuno: 2 huevos revueltos y 1 pan tostado"
+        *   *Example*: "Lunch: 150g chicken breast and 1 cup of rice"
+
+## API Endpoints
+
+If running locally, visit `http://localhost:5000/swagger` (or the port configured in `launchSettings.json`) to see the Swagger UI.
+
+*   `POST /api/Cronometer/Log-meal`: Manual logging endpoint.
+*   `GET /api/Telegram/updates`: Manually fetch Telegram updates.
+*   `POST /api/Gemini/ask`: Test the Gemini integration directly.
+
+## Project Structure
+
+*   `Clients/`: HTTP Clients for external services (Cronometer, Telegram, OpenAI, Gemini).
+*   `Controllers/`: API Controllers.
+*   `Services/`: Business logic and background services.
+    *   `CronometerPollingHostedService.cs`: The heart of the bot, polling for messages and coordinating the flow.
+*   `Models/`: Data models and DTOs.
+
