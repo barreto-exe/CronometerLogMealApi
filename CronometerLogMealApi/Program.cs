@@ -34,14 +34,13 @@ builder.Services.AddSingleton<TelegramService>();
 builder.Services.AddHostedService<CronometerPollingHostedService>();
 builder.Services.AddTransient<CronometerService>();
 
-// Gemini options + Scraper Client (Playwright)
+// Gemini options + typed HttpClient
 builder.Services.Configure<GeminiClientOptions>(builder.Configuration.GetSection("Gemini"));
-builder.Services.AddTransient<GeminiHttpClient>();
-// builder.Services.AddHttpClient<GeminiHttpClient>((sp, client) =>
-// {
-//     var opts = sp.GetRequiredService<IOptions<GeminiClientOptions>>().Value;
-//     client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
-// });
+builder.Services.AddHttpClient<GeminiHttpClient>((sp, client) =>
+{
+    var opts = sp.GetRequiredService<IOptions<GeminiClientOptions>>().Value;
+    client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
+});
 
 var app = builder.Build();
 
