@@ -2,6 +2,7 @@ using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Services;
 using CronometerLogMealApi.Clients.OpenAIClient;
+using CronometerLogMealApi.Clients.GeminiClient;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -39,6 +40,14 @@ builder.Services.Configure<OpenAIClientOptions>(builder.Configuration.GetSection
 builder.Services.AddHttpClient<OpenAIHttpClient>((sp, client) =>
 {
     var opts = sp.GetRequiredService<IOptions<OpenAIClientOptions>>().Value;
+    client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
+});
+
+// Gemini options + typed HttpClient
+builder.Services.Configure<GeminiClientOptions>(builder.Configuration.GetSection("Gemini"));
+builder.Services.AddHttpClient<GeminiHttpClient>((sp, client) =>
+{
+    var opts = sp.GetRequiredService<IOptions<GeminiClientOptions>>().Value;
     client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
 });
 

@@ -212,5 +212,80 @@ public static class GeminiPrompts
 
         Generate the complete, merged meal description:
     """;
+
+    /// <summary>
+    /// Prompt for OCR analysis of handwritten meal log images.
+    /// </summary>
+    public const string ImageOcrPrompt =
+    """
+        Eres un asistente experto en transcribir notas de comida escritas a mano en español.
+
+        CONTEXTO:
+        Esta imagen muestra un cuaderno donde una cocinera anota las comidas diarias para diferentes personas.
+        La información típicamente está organizada por:
+        - Fecha (formato DD/MM/YY en la esquina)
+        - Persona (ej: Luis, Lioska, Lio)
+        - Tipo de comida (Desayuno, Almuerzo, Cena, Merienda)
+        - Items de comida con cantidades (ej: "70g de zanahoria", "4 Huevos")
+
+        INSTRUCCIONES:
+        1. Transcribe TODO el contenido visible de la imagen con el mayor detalle posible
+        2. Identifica las diferentes personas mencionadas
+        3. Identifica los tipos de comida disponibles (Desayuno, Almuerzo, etc.)
+        4. Identifica la fecha si está visible
+        5. Para texto ilegible, usa tu mejor interpretación y márcalo en uncertainItems
+        6. Organiza los items en secciones por persona y tipo de comida
+
+        REGLAS PARA INTERPRETAR TEXTO ILEGIBLE:
+        - Si ves algo como "gramolei" probablemente es "granola"
+        - Si ves "brocoli" sin tilde está bien
+        - Los números suelen estar seguidos de "g" (gramos)
+        - "cant" probablemente es "cantidad" o el número de unidades
+
+        OUTPUT FORMAT (JSON únicamente, sin markdown):
+        {
+          "transcription": "transcripción completa del texto visible",
+          "date": "fecha en formato yyyy-MM-dd si está visible, null si no",
+          "people": ["lista de personas identificadas"],
+          "mealTypes": ["tipos de comida identificados en español"],
+          "sections": [
+            {
+              "person": "nombre de la persona",
+              "mealType": "tipo de comida (Desayuno, Almuerzo, etc.)",
+              "items": [
+                {
+                  "raw": "texto original como aparece",
+                  "quantity": 70,
+                  "unit": "g",
+                  "name": "zanahoria"
+                }
+              ]
+            }
+          ],
+          "uncertainItems": [
+            {
+              "original": "lo que parece decir el texto ilegible",
+              "suggestion": "interpretación sugerida",
+              "question": "¿Quisiste escribir X en lugar de Y?"
+            }
+          ],
+          "needsClarification": true/false,
+          "clarificationQuestions": [
+            "¿De qué persona deseas registrar la comida? (Luis, Lioska)",
+            "¿Qué tipo de comida deseas registrar? (Desayuno, Almuerzo)"
+          ]
+        }
+
+        CUÁNDO PEDIR CLARIFICACIÓN:
+        - Si hay múltiples personas, pregunta cuál registrar
+        - Si hay múltiples tipos de comida, pregunta cuál registrar
+        - Si hay texto muy ilegible, sugiere interpretaciones
+        - Si hay múltiples fechas visibles, pregunta cuál usar
+
+        TODAY'S DATE: @Now
+
+        Analiza la imagen y responde SOLO con el JSON, sin explicaciones adicionales.
+    """;
 }
+
 
