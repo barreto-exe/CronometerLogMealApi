@@ -1,6 +1,7 @@
 using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.CronometerClient.Models;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
+using CronometerLogMealApi.Models;
 using CronometerLogMealApi.Requests;
 using F23.StringSimilarity;
 using Microsoft.Extensions.Logging;
@@ -20,9 +21,9 @@ public class CronometerService
     }
 
     /// <summary>
-    /// Logs a meal to Cronometer based on the given request/auth. Returns true on success, false on failure.
+    /// Logs a meal to Cronometer based on the given request/auth. Returns detailed result.
     /// </summary>
-    public async Task<bool> LogMealAsync(AuthPayload auth, LogMealRequest request, CancellationToken cancellation = default)
+    public async Task<LogMealResult> LogMealAsync(AuthPayload auth, LogMealRequest request, CancellationToken cancellation = default)
     {
         //log auth
         logger.LogInformation("Logging meal for userId {UserId} with sessionKey {SessionKey}", auth.UserId, auth.Token);
@@ -43,7 +44,14 @@ public class CronometerService
         var userId = auth.UserId;
         var type = "Serving";
 
-        var servingPayload = await GetServingPayloadFromRequest(order, date, userId, type, request.Items, auth, request.LogTime, cancellation);
+        var (servingPayload, notFoundItems) = await GetServingPayloadFromRequest(order, date, userId, type, request.Items, auth, request.LogTime, cancellation);
+
+        // If there are items not found, return early with that information
+        if (notFoundItems.Any())
+        {
+            logger.LogWarning("Some food items were not found: {Items}", string.Join(", ", notFoundItems));
+            return LogMealResult.NotFound(notFoundItems);
+        }
 
         var result = await cronometerHttpClient.AddMultiServingAsync(servingPayload, cancellation);
 
@@ -56,15 +64,15 @@ public class CronometerService
         {
             var jsonPayload = JsonSerializer.Serialize(servingPayload);
             logger.LogError("Failed to log meal. Payload: {Payload}, Response: {Response}", jsonPayload, result?.Raw.ToString());
-            return false;
+            return LogMealResult.Failed("Error al registrar la comida en Cronometer.");
         }
 
         logger.LogInformation("Successfully logged meal. Response: {Response}", result?.Raw.ToString());
 
-        return true;
+        return LogMealResult.Successful();
     }
 
-    private async Task<AddMultiServingRequest> GetServingPayloadFromRequest(
+    private async Task<(AddMultiServingRequest request, List<string> notFoundItems)> GetServingPayloadFromRequest(
         int order,
         DateTime date,
         long userId,
@@ -80,6 +88,8 @@ public class CronometerService
             Auth = auth,
         };
 
+        var notFoundItems = new List<string>();
+
         foreach (var itemRequest in whatsappRequest)
         {
             var itemToLogInCronometer = new ServingPayload()
@@ -92,6 +102,14 @@ public class CronometerService
             };
 
             var foodId = await GetFoodId(itemRequest.Name, auth, cancellation);
+            
+            // Track items that were not found
+            if (foodId == 0)
+            {
+                notFoundItems.Add(itemRequest.Name);
+                continue; // Skip this item, don't add to servings
+            }
+
             var food = (await cronometerHttpClient.GetFoodsAsync(new()
             {
                 Ids = [foodId],
@@ -109,7 +127,7 @@ public class CronometerService
             result.Servings.Add(itemToLogInCronometer);
         }
 
-        return result;
+        return (result, notFoundItems);
     }
 
     private async Task<long> GetFoodId(string query, AuthPayload auth, CancellationToken cancellationToken)
