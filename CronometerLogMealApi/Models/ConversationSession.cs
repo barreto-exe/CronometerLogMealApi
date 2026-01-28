@@ -41,6 +41,11 @@ public class ConversationSession
     public string? OriginalDescription { get; set; }
 
     /// <summary>
+    /// List of validated foods ready to be logged (populated after DB validation).
+    /// </summary>
+    public List<ValidatedMealItem> ValidatedFoods { get; set; } = new();
+
+    /// <summary>
     /// Session timeout duration (default: 10 minutes).
     /// </summary>
     public static readonly TimeSpan SessionTimeout = TimeSpan.FromMinutes(10);
@@ -82,7 +87,12 @@ public enum ConversationState
     /// <summary>
     /// Currently processing the meal request.
     /// </summary>
-    Processing
+    Processing,
+
+    /// <summary>
+    /// Waiting for user to confirm the meal before saving.
+    /// </summary>
+    AwaitingConfirmation
 }
 
 /// <summary>

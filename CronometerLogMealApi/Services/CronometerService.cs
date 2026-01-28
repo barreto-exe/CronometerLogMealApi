@@ -194,6 +194,59 @@ public class CronometerService
         return 0;
     }
 
+    /// <summary>
+    /// Validates a list of meal items against Cronometer's database.
+    /// Returns a list of validated items with exact DB info, and a list of not found items.
+    /// </summary>
+    public async Task<(List<ValidatedMealItem> ValidatedItems, List<string> NotFoundItems)> ValidateMealItemsAsync(
+        IEnumerable<MealItem> items,
+        AuthPayload auth,
+        CancellationToken cancellationToken = default)
+    {
+        var validatedItems = new List<ValidatedMealItem>();
+        var notFoundItems = new List<string>();
+
+        foreach (var itemRequest in items)
+        {
+            var foodId = await GetFoodId(itemRequest.Name, auth, cancellationToken);
+            
+            if (foodId == 0)
+            {
+                notFoundItems.Add(itemRequest.Name);
+                continue;
+            }
+
+            var food = (await cronometerHttpClient.GetFoodsAsync(new()
+            {
+                Ids = [foodId],
+                Auth = auth,
+            }, cancellationToken))
+            .Foods?
+            .FirstOrDefault();
+
+            if (food == null)
+            {
+                notFoundItems.Add(itemRequest.Name);
+                continue;
+            }
+
+            var measure = GetSimilarMeasureId(food.Measures, itemRequest.Unit);
+
+            validatedItems.Add(new ValidatedMealItem
+            {
+                OriginalName = itemRequest.Name,
+                FoodName = food.Name,
+                FoodId = food.Id,
+                Quantity = itemRequest.Quantity,
+                MeasureName = measure.Name,
+                MeasureId = measure.Id,
+                MeasureGrams = measure.Value
+            });
+        }
+
+        return (validatedItems, notFoundItems);
+    }
+
     private static Measure GetSimilarMeasureId(IEnumerable<Measure>? measures, string measureName)
     {
         var defaultMeasure = new Measure()

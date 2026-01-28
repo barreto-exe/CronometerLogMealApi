@@ -109,6 +109,12 @@ public class CronometerPollingHostedService : BackgroundService
                 return;
             }
 
+            if (IsCommand(text, "/save") || IsCommand(text, "/guardar"))
+            {
+                await HandleSaveCommandAsync(chatIdStr, ct);
+                return;
+            }
+
             // Route based on conversation state
             await HandleConversationMessageAsync(chatIdStr, text, ct);
         }
@@ -225,6 +231,10 @@ public class CronometerPollingHostedService : BackgroundService
 
             case ConversationState.AwaitingClarification:
                 await HandleClarificationResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingConfirmation:
+                await HandleConfirmationResponseAsync(chatId, userInfo, text, ct);
                 break;
 
             case ConversationState.Processing:
@@ -368,39 +378,184 @@ public class CronometerPollingHostedService : BackgroundService
         }
     }
 
-    private async Task AttemptMealLoggingAsync(string chatId, CronometerUserInfo userInfo, LogMealRequest request, CancellationToken ct)
+    private async Task HandleConfirmationResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
     {
-        await _telegramService.SendMessageAsync(chatId, "📝 Registrando en Cronometer...", null, ct);
-
-        var logResult = await _cronometerService.LogMealAsync(
-            new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! },
-            request, ct);
-
-        if (logResult.Success)
+        // If user didn't use /save but sent text, assume they want to change something
+        // Treat as a new description or clarification
+        await _telegramService.SendMessageAsync(chatId, 
+            "🔄 Entendido, vamos a corregir. Procesando tus cambios...", null, ct);
+            
+        // Reset valid outcome and go back to processing logic
+        // We add the new text to history to contextually update the request
+        userInfo.Conversation!.MessageHistory.Add(new ConversationMessage
         {
-            // Reset session on success
-            userInfo.Conversation = null;
+            Role = "user",
+            Content = text,
+            Timestamp = DateTime.UtcNow
+        });
 
-            var itemsSummary = string.Join("\n", request.Items.Select(i => 
-                $"• {i.Quantity} {i.Unit} de {i.Name}"));
+        userInfo.Conversation.State = ConversationState.Processing;
+
+        try
+        {
+            var fullContext = BuildConversationContext(userInfo.Conversation.MessageHistory);
+            var result = await ProcessMealDescriptionAsync(fullContext, ct);
+
+            if (!string.IsNullOrEmpty(result.ErrorMessage))
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingMealDescription; // Or should we stay in confirmation but failed? 
+                                                                                         // Better to restart flow or ask purely about the error?
+                                                                                         // Let's go to awaiting description to be safe.
+                await _telegramService.SendMessageAsync(chatId,
+                    $"❌ {result.ErrorMessage}\n\nPor favor, intenta describir tu comida nuevamente.",
+                    null, ct);
+                return;
+            }
+
+            if (result.NeedsClarification)
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingClarification;
+                userInfo.Conversation.PendingClarifications = result.Clarifications;
+                userInfo.Conversation.PendingMealRequest = result.MealRequest;
+
+                var clarificationMessage = FormatClarificationQuestions(result.Clarifications);
+                 userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                {
+                    Role = "assistant",
+                    Content = clarificationMessage,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                await _telegramService.SendMessageAsync(chatId,
+                    "🤔 Necesito un poco más de información:\n\n" + clarificationMessage,
+                    "HTML", ct);
+                return;
+            }
+
+            // If clear, validate again
+            await AttemptMealLoggingAsync(chatId, userInfo, result.MealRequest!, ct);
+        }
+        catch (Exception ex)
+        {
+             _logger.LogError(ex, "Error processing change request for chatId {ChatId}", chatId);
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Ocurrió un error al procesar tu cambio. Intenta nuevamente.",
+                null, ct);
+             // Revert to confirmation state so they don't lose progress? 
+             // actually safe to just leave them be, or maybe reset state?
+             // Let's leave state as processing -> failed, so maybe go back to AwaitingConfirmation
+             userInfo.Conversation.State = ConversationState.AwaitingConfirmation;
+        }
+    }
+
+    private async Task HandleSaveCommandAsync(string chatId, CancellationToken ct)
+    {
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo?.Conversation == null)
+        {
+             await _telegramService.SendMessageAsync(chatId,
+                "No hay una sesión activa para guardar.", null, ct);
+            return;
+        }
+
+        if (userInfo.Conversation.State != ConversationState.AwaitingConfirmation)
+        {
+             await _telegramService.SendMessageAsync(chatId,
+                "⚠️ No hay cambios pendientes de confirmación. Usa /start para iniciar.", null, ct);
+            return;
+        }
+
+        if (userInfo.Conversation.PendingMealRequest == null || !userInfo.Conversation.ValidatedFoods.Any())
+        {
+             await _telegramService.SendMessageAsync(chatId,
+                "❌ Error interno: No hay datos de comida validados. Por favor inicia de nuevo con /start.", null, ct);
+             userInfo.Conversation.State = ConversationState.Idle;
+            return;
+        }
+
+        // Proceed to save to Cronometer using VALIDATED items
+        await _telegramService.SendMessageAsync(chatId, "💾 Guardando cambios...", null, ct);
+
+        try
+        {
+            var request = userInfo.Conversation.PendingMealRequest;
+            
+            // Log order based on category
+            int order = request.Category.ToLower() switch
+            {
+                "breakfast" => 65537,
+                "lunch" => 131073,
+                "dinner" => 196609,
+                "snacks" => 262145,
+                _ => 1
+            };
+
+            var servingPayload = new AddMultiServingRequest
+            {
+                Servings = new List<ServingPayload>(),
+                Auth = new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! }
+            };
+
+            foreach (var item in userInfo.Conversation.ValidatedFoods)
+            {
+                servingPayload.Servings.Add(new ServingPayload
+                {
+                    Order = order,
+                    Day = request.Date.ToString("yyyy-MM-dd"),
+                    Time = request.LogTime == true ? request.Date.ToString("HH:m:s") : string.Empty,
+                    UserId = userInfo.UserId!.Value,
+                    Type = "Serving",
+                    FoodId = item.FoodId,
+                    MeasureId = item.MeasureId,
+                    Grams = item.Quantity * item.MeasureGrams
+                });
+            }
+
+            var result = await _cronometerClient.AddMultiServingAsync(servingPayload, ct);
+
+            // Assuming success if no exception and result is ok (simplified, existing code had more checks)
+            // Ideally we check implicit success similar to CronometerService logic
+             bool hasFailed = result != null &&
+                result.Raw.ValueKind == JsonValueKind.Object &&
+                result.Raw.TryGetProperty("result", out var resultProp) &&
+                string.Equals(resultProp.GetString(), "fail", StringComparison.OrdinalIgnoreCase);
+
+            if (hasFailed)
+            {
+                 await _telegramService.SendMessageAsync(chatId, "❌ Error al guardar en Cronometer.", null, ct);
+                 return;
+            }
+
+            // Success
+            userInfo.Conversation = null; // Clear session
 
             await _telegramService.SendMessageAsync(chatId,
-                "✅ <b>¡Comida registrada exitosamente!</b>\n\n" +
-                $"📋 <b>Categoría:</b> {request.Category}\n" +
-                $"📅 <b>Fecha:</b> {request.Date:dd/MM/yyyy HH:mm}\n\n" +
-                $"<b>Alimentos:</b>\n{itemsSummary}\n\n" +
-                "Usa /start para registrar otra comida.",
+                "✅ <b>¡Guardado exitoso!</b>\n\nTu comida ha sido registrada.",
                 "HTML", ct);
+
         }
-        else if (logResult.NotFoundItems.Count > 0)
+        catch (Exception ex)
         {
-            // Items not found, ask for alternatives
+            _logger.LogError(ex, "Error saving meal for chatId {ChatId}", chatId);
+             await _telegramService.SendMessageAsync(chatId,
+                "❌ Ocurrió un error al guardar. Intenta /save nuevamente.", null, ct);
+        }
+    }
+    private async Task AttemptMealLoggingAsync(string chatId, CronometerUserInfo userInfo, LogMealRequest request, CancellationToken ct)
+    {
+        await _telegramService.SendMessageAsync(chatId, "🔍 Validando con Cronometer...", null, ct);
+
+        // Perform validation instead of direct logging
+        var (validatedItems, notFoundItems) = await _cronometerService.ValidateMealItemsAsync(
+            request.Items,
+            new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! },
+            ct);
+
+        if (notFoundItems.Count > 0)
+        {
             userInfo.Conversation!.State = ConversationState.AwaitingClarification;
+            var notFoundList = string.Join("\n", notFoundItems.Select(i => $"• <b>{i}</b>"));
 
-            var notFoundList = string.Join("\n", logResult.NotFoundItems.Select(i => $"• <b>{i}</b>"));
-
-            // Create clarification items for not-found foods
-            userInfo.Conversation.PendingClarifications = logResult.NotFoundItems
+            userInfo.Conversation.PendingClarifications = notFoundItems
                 .Select(item => new ClarificationItem
                 {
                     Type = ClarificationType.FoodNotFound,
@@ -409,29 +564,30 @@ public class CronometerPollingHostedService : BackgroundService
                 })
                 .ToList();
 
-            userInfo.Conversation.MessageHistory.Add(new ConversationMessage
-            {
-                Role = "assistant",
-                Content = $"Estos alimentos no fueron encontrados: {string.Join(", ", logResult.NotFoundItems)}",
-                Timestamp = DateTime.UtcNow
-            });
-
-            await _telegramService.SendMessageAsync(chatId,
-                "⚠️ <b>Algunos alimentos no fueron encontrados en Cronometer:</b>\n\n" +
+             await _telegramService.SendMessageAsync(chatId,
+                "⚠️ <b>No encontré estos alimentos:</b>\n\n" +
                 notFoundList + "\n\n" +
-                "Por favor, proporciona nombres alternativos o más específicos para estos alimentos.\n" +
-                "Por ejemplo: \"pollo\" → \"pechuga de pollo\", \"carne\" → \"carne de res molida\"",
+                "Por favor, dame nombres alternativos (ej: \"pollo\" -> \"pechuga de pollo\").",
                 "HTML", ct);
+            return;
         }
-        else
-        {
-            // General error
-            userInfo.Conversation!.State = ConversationState.AwaitingMealDescription;
-            await _telegramService.SendMessageAsync(chatId,
-                $"❌ {logResult.ErrorMessage ?? "Error desconocido al registrar la comida."}\n\n" +
-                "Usa /cancel para cancelar o intenta describir tu comida nuevamente.",
-                null, ct);
-        }
+
+        // All items validated successfully
+        userInfo.Conversation!.PendingMealRequest = request;
+        userInfo.Conversation.ValidatedFoods = validatedItems;
+        userInfo.Conversation.State = ConversationState.AwaitingConfirmation;
+
+        // Build summary message
+        var itemsSummary = string.Join("\n", validatedItems.Select(i => 
+            $"• {i.Quantity} {i.MeasureName} de <b>{i.FoodName}</b>"));
+
+        var msg = $"💾 Estás a punto de registrar:\n\n" +
+                  $"<b>Hora:</b> {request.Date:h:mm tt}\n" +
+                  $"<b>Tipo:</b> {request.Category.ToUpper()}\n\n" +
+                  $"<b>Alimentos:</b>\n{itemsSummary}\n\n" +
+                  $"¿Deseas hacer algún cambio? Si todo está bien, guarda los cambios con el comando <b>/save</b>.";
+
+        await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
     }
 
     private async Task<MealProcessingResult> ProcessMealDescriptionAsync(string text, CancellationToken ct)
@@ -591,11 +747,7 @@ public class CronometerPollingHostedService : BackgroundService
 
         var successReply =
             "✅ <b>Inicio de sesión exitoso.</b>\n\n" +
-            "Ahora puedes registrar tus comidas usando el comando /start\n\n" +
-            "Recuerda, puedes indicar los siguientes datos para cada comida:\n\n" +
-            "• <b>Hora de la comida</b>\n" +
-            "• <b>Tipo de comida</b>: Desayuno, Almuerzo, Cena, Merienda\n" +
-            "• <b>Pesos y tamaños</b>: Por ejemplo, <i>70g de zanahoria, 2 huevos pequeños, 2 cucharadas grandes de aceite</i>";
+            "Ahora puedes registrar tus comidas usando el comando /start.";
         await _telegramService.SendMessageAsync(chatId, successReply, "HTML", ct);
     }
 
