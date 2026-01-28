@@ -4,11 +4,28 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Force x64 platform for Tesseract native binaries -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="F23.StringSimilarity" Version="1.1.0" />
+    <PackageReference Include="Tesseract" Version="5.2.0" />
+    <PackageReference Include="Tesseract.Drawing" Version="5.2.0" />
   </ItemGroup>
+
+  <!-- Copy tessdata folder to output -->
+  <ItemGroup>
+    <None Include="tessdata\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Copy Tesseract native x64 DLLs to output -->
+  <Target Name="CopyTesseractNativeDlls" AfterTargets="Build">
+    <ItemGroup>
+      <TesseractX64Dlls Include="$(NuGetPackageRoot)tesseract\5.2.0\x64\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TesseractX64Dlls)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

@@ -212,5 +212,147 @@ public static class GeminiPrompts
 
         Generate the complete, merged meal description:
     """;
-}
 
+    /// <summary>
+    /// Prompt for OCR analysis of handwritten meal log images.
+    /// </summary>
+    public const string ImageOcrPrompt =
+    """
+        Eres un asistente experto en transcribir notas de comida escritas a mano en español.
+
+        CONTEXTO:
+        Esta imagen muestra un cuaderno donde una cocinera anota las comidas diarias para diferentes personas.
+        La información típicamente está organizada por:
+        - Fecha (formato DD/MM/YY en la esquina)
+        - Persona (ej: Luis, Lioska, Lio)
+        - Tipo de comida (Desayuno, Almuerzo, Cena, Merienda)
+        - Items de comida con cantidades (ej: "70g de zanahoria", "4 Huevos")
+
+        INSTRUCCIONES:
+        1. Transcribe TODO el contenido visible de la imagen con el mayor detalle posible
+        2. Identifica las diferentes personas mencionadas
+        3. Identifica los tipos de comida disponibles (Desayuno, Almuerzo, etc.)
+        4. Identifica la fecha si está visible
+        5. Para texto ilegible, usa tu mejor interpretación y márcalo en uncertainItems
+        6. Organiza los items en secciones por persona y tipo de comida
+
+        REGLAS PARA INTERPRETAR TEXTO ILEGIBLE:
+        - Si ves algo como "gramolei" probablemente es "granola"
+        - Si ves "brocoli" sin tilde está bien
+        - Los números suelen estar seguidos de "g" (gramos)
+        - "cant" probablemente es "cantidad" o el número de unidades
+
+        OUTPUT FORMAT (JSON únicamente, sin markdown):
+        {
+          "transcription": "transcripción completa del texto visible",
+          "date": "fecha en formato yyyy-MM-dd si está visible, null si no",
+          "people": ["lista de personas identificadas"],
+          "mealTypes": ["tipos de comida identificados en español"],
+          "sections": [
+            {
+              "person": "nombre de la persona",
+              "mealType": "tipo de comida (Desayuno, Almuerzo, etc.)",
+              "items": [
+                {
+                  "raw": "texto original como aparece",
+                  "quantity": 70,
+                  "unit": "g",
+                  "name": "zanahoria"
+                }
+              ]
+            }
+          ],
+          "uncertainItems": [
+            {
+              "original": "lo que parece decir el texto ilegible",
+              "suggestion": "interpretación sugerida",
+              "question": "¿Quisiste escribir X en lugar de Y?"
+            }
+          ],
+          "needsClarification": true/false,
+          "clarificationQuestions": [
+            "¿De qué persona deseas registrar la comida? (Luis, Lioska)",
+            "¿Qué tipo de comida deseas registrar? (Desayuno, Almuerzo)"
+          ]
+        }
+
+        CUÁNDO PEDIR CLARIFICACIÓN:
+        - Si hay múltiples personas, pregunta cuál registrar
+        - Si hay múltiples tipos de comida, pregunta cuál registrar
+        - Si hay texto muy ilegible, sugiere interpretaciones
+        - Si hay múltiples fechas visibles, pregunta cuál usar
+
+        TODAY'S DATE: @Now
+
+        Analiza la imagen y responde SOLO con el JSON, sin explicaciones adicionales.
+    """;
+
+    /// <summary>
+    /// Prompt for interpreting OCR-extracted text (local OCR + LLM).
+    /// Used when Windows OCR extracts text and we need to structure it.
+    /// </summary>
+    public const string OcrTextInterpretationPrompt =
+    """
+        Eres un asistente experto en interpretar texto extraído de notas de comida escritas a mano.
+
+        CONTEXTO:
+        Se ha usado OCR para extraer texto de una foto de un cuaderno de comidas.
+        El texto puede tener errores de reconocimiento, especialmente con letra manuscrita.
+        La información típicamente está organizada por:
+        - Fecha (formato DD/MM/YY)
+        - Persona (ej: Luis, Lioska, Lio)
+        - Tipo de comida (Desayuno, Almuerzo, Cena, Merienda)
+        - Items de comida con cantidades (ej: "70g de zanahoria", "4 Huevos")
+
+        TEXTO EXTRAÍDO POR OCR:
+        @OcrText
+
+        INSTRUCCIONES ADICIONALES DEL USUARIO:
+        @UserInstructions
+
+        INSTRUCCIONES:
+        1. Interpreta el texto OCR corrigiendo posibles errores de reconocimiento
+        2. Identifica las diferentes personas mencionadas
+        3. Identifica los tipos de comida
+        4. Identifica la fecha si está visible
+        5. Organiza los items en secciones por persona y tipo de comida
+        6. Corrige errores comunes como: "Dcsayuna" → "Desayuno", "Luls" → "Luis"
+
+        OUTPUT FORMAT (JSON únicamente, sin markdown):
+        {
+          "transcription": "texto corregido e interpretado",
+          "date": "fecha en formato yyyy-MM-dd si está visible, null si no",
+          "people": ["lista de personas identificadas"],
+          "mealTypes": ["tipos de comida identificados"],
+          "sections": [
+            {
+              "person": "nombre de la persona",
+              "mealType": "tipo de comida",
+              "items": [
+                {
+                  "raw": "texto original del OCR",
+                  "quantity": 70,
+                  "unit": "g",
+                  "name": "zanahoria"
+                }
+              ]
+            }
+          ],
+          "uncertainItems": [
+            {
+              "original": "texto confuso del OCR",
+              "suggestion": "interpretación sugerida",
+              "question": "¿Quisiste escribir X?"
+            }
+          ],
+          "needsClarification": true/false,
+          "clarificationQuestions": [
+            "preguntas si hay ambigüedad"
+          ]
+        }
+
+        TODAY'S DATE: @Now
+
+        Responde SOLO con el JSON.
+    """;
+}

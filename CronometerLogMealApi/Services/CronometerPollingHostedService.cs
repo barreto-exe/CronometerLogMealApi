@@ -4,6 +4,7 @@ using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
 using CronometerLogMealApi.Clients.OpenAIClient;
 using CronometerLogMealApi.Clients.GeminiClient;
+using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
 using CronometerLogMealApi.Models;
 using CronometerLogMealApi.Requests;
@@ -17,16 +18,30 @@ public class CronometerPollingHostedService : BackgroundService
 
     private readonly ILogger<CronometerPollingHostedService> _logger;
     private readonly TelegramService _telegramService;
+    private readonly TelegramHttpClient _telegramClient;
     private readonly CronometerHttpClient _cronometerClient;
     private readonly OpenAIHttpClient _openAIClient;
+    private readonly GeminiHttpClient _geminiClient;
+    private readonly TesseractOcrService _ocrService;
     private readonly CronometerService _cronometerService;
 
-    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient, OpenAIHttpClient openAIClient, CronometerService cronometerService)
+    public CronometerPollingHostedService(
+        ILogger<CronometerPollingHostedService> logger, 
+        TelegramService service, 
+        TelegramHttpClient telegramClient,
+        CronometerHttpClient cronometerClient, 
+        OpenAIHttpClient openAIClient, 
+        GeminiHttpClient geminiClient,
+        TesseractOcrService ocrService,
+        CronometerService cronometerService)
     {
         _logger = logger;
         _telegramService = service;
+        _telegramClient = telegramClient;
         _cronometerClient = cronometerClient;
         _openAIClient = openAIClient;
+        _geminiClient = geminiClient;
+        _ocrService = ocrService;
         _cronometerService = cronometerService;
     }
 
@@ -70,25 +85,37 @@ public class CronometerPollingHostedService : BackgroundService
         if (update == null) return;
 
         var msg = update.Message ?? update.EditedMessage;
-        var text = msg?.Text;
         var chatId = msg?.Chat?.Id;
         
-        if (!string.IsNullOrWhiteSpace(text) && chatId.HasValue)
-        {
-            var chatIdStr = chatId.Value.ToString();
-            _logger.LogInformation("[Telegram] {ChatId}: {Text}", chatIdStr, text);
+        if (!chatId.HasValue) return;
+        
+        var chatIdStr = chatId.Value.ToString();
 
-            // Check for session timeout
-            if (_userSessions.TryGetValue(chatIdStr, out var existingUser) && 
-                existingUser?.Conversation != null && 
-                existingUser.Conversation.IsExpired)
-            {
-                _logger.LogInformation("Session expired for chatId {ChatId}", chatIdStr);
-                existingUser.Conversation = null;
-                await _telegramService.SendMessageAsync(chatIdStr, 
-                    "⏰ Tu sesión anterior expiró por inactividad. Usa /start para iniciar una nueva.", 
-                    null, ct);
-            }
+        // Check for session timeout
+        if (_userSessions.TryGetValue(chatIdStr, out var existingUser) && 
+            existingUser?.Conversation != null && 
+            existingUser.Conversation.IsExpired)
+        {
+            _logger.LogInformation("Session expired for chatId {ChatId}", chatIdStr);
+            existingUser.Conversation = null;
+            await _telegramService.SendMessageAsync(chatIdStr, 
+                "⏰ Tu sesión anterior expiró por inactividad. Usa /start para iniciar una nueva.", 
+                null, ct);
+        }
+
+        // Check for photos first
+        if (msg?.Photo != null && msg.Photo.Count > 0)
+        {
+            _logger.LogInformation("[Telegram] {ChatId}: Received photo with {Count} sizes", chatIdStr, msg.Photo.Count);
+            await HandlePhotoMessageAsync(chatIdStr, msg, ct);
+            return;
+        }
+
+        var text = msg?.Text;
+        
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            _logger.LogInformation("[Telegram] {ChatId}: {Text}", chatIdStr, text);
 
             // Handle commands first
             if (IsCommand(text, "/start"))
@@ -194,6 +221,345 @@ public class CronometerPollingHostedService : BackgroundService
             "❌ Sesión cancelada. Usa /start para iniciar una nueva.",
             null, ct);
     }
+
+    private async Task HandlePhotoMessageAsync(string chatId, TelegramMessage msg, CancellationToken ct)
+    {
+        // Check if user is authenticated
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo == null ||
+            string.IsNullOrWhiteSpace(userInfo.SessionKey))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ Primero debes iniciar sesión con:\n<b>/login &lt;email&gt; &lt;password&gt;</b>",
+                "HTML", ct);
+            return;
+        }
+
+        // Auto-start a session if none exists
+        if (userInfo.Conversation == null || userInfo.Conversation.State == ConversationState.Idle)
+        {
+            userInfo.Conversation = new ConversationSession
+            {
+                State = ConversationState.Processing,
+                StartedAt = DateTime.UtcNow,
+                LastActivityAt = DateTime.UtcNow,
+                MessageHistory = new List<ConversationMessage>()
+            };
+        }
+
+        userInfo.Conversation.Touch();
+        await _telegramService.SendMessageAsync(chatId, "📸 Procesando imagen...", null, ct);
+
+        try
+        {
+            // Get the largest photo (best quality)
+            var photo = msg.Photo!.OrderByDescending(p => p.FileSize ?? 0).First();
+            
+            // Download the photo
+            var fileInfo = await _telegramClient.GetFileAsync(photo.FileId, ct);
+            if (fileInfo == null || string.IsNullOrEmpty(fileInfo.FilePath))
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "❌ No se pudo obtener la imagen. Por favor, intenta enviarla nuevamente.",
+                    null, ct);
+                userInfo.Conversation.State = ConversationState.AwaitingMealDescription;
+                return;
+            }
+
+            var imageBytes = await _telegramClient.DownloadFileAsync(fileInfo.FilePath, ct);
+            _logger.LogInformation("Downloaded image: {Size} bytes", imageBytes.Length);
+
+            // Process the image with Vision API
+            var ocrResult = await ProcessImageAsync(imageBytes, msg.Caption, ct);
+
+            if (!string.IsNullOrEmpty(ocrResult.Error))
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    $"❌ {ocrResult.Error}",
+                    null, ct);
+                userInfo.Conversation.State = ConversationState.AwaitingMealDescription;
+                return;
+            }
+
+            // Store OCR result in conversation
+            userInfo.Conversation.OriginalDescription = ocrResult.Transcription;
+            userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+            {
+                Role = "user",
+                Content = $"[Imagen transcrita]: {ocrResult.Transcription}",
+                Timestamp = DateTime.UtcNow
+            });
+
+            // Check if clarification is needed
+            if (ocrResult.NeedsClarification && ocrResult.ClarificationQuestions.Count > 0)
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingClarification;
+
+                // Store OCR data for later use
+                userInfo.Conversation.PendingMealRequest = null; // Will be set after clarification
+
+                var transcriptionPreview = ocrResult.Transcription.Length > 200 
+                    ? ocrResult.Transcription.Substring(0, 200) + "..." 
+                    : ocrResult.Transcription;
+
+                var message = $"📝 <b>Texto detectado:</b>\n<i>{transcriptionPreview}</i>\n\n";
+                
+                // Add info about what was found
+                if (ocrResult.People.Count > 0)
+                {
+                    message += $"👥 <b>Personas:</b> {string.Join(", ", ocrResult.People)}\n";
+                }
+                if (ocrResult.MealTypes.Count > 0)
+                {
+                    message += $"🍽️ <b>Comidas:</b> {string.Join(", ", ocrResult.MealTypes)}\n";
+                }
+                if (!string.IsNullOrEmpty(ocrResult.Date))
+                {
+                    message += $"📅 <b>Fecha:</b> {ocrResult.Date}\n";
+                }
+
+                message += "\n🤔 <b>Necesito clarificación:</b>\n";
+                message += string.Join("\n", ocrResult.ClarificationQuestions.Select((q, i) => $"{i + 1}. {q}"));
+
+                // Add uncertain items if any
+                if (ocrResult.UncertainItems.Count > 0)
+                {
+                    message += "\n\n⚠️ <b>Items con lectura incierta:</b>\n";
+                    foreach (var item in ocrResult.UncertainItems)
+                    {
+                        if (!string.IsNullOrEmpty(item.Question))
+                        {
+                            message += $"• {item.Question}\n";
+                        }
+                    }
+                }
+
+                userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                {
+                    Role = "assistant",
+                    Content = message,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                await _telegramService.SendMessageAsync(chatId, message, "HTML", ct);
+                return;
+            }
+
+            // If no clarification needed but we have multiple sections, ask which one
+            if (ocrResult.Sections.Count > 1)
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingClarification;
+                
+                var optionsMessage = "📋 <b>Encontré múltiples registros:</b>\n\n";
+                for (int i = 0; i < ocrResult.Sections.Count; i++)
+                {
+                    var section = ocrResult.Sections[i];
+                    var itemCount = section.Items.Count;
+                    optionsMessage += $"{i + 1}. <b>{section.Person}</b> - {section.MealType} ({itemCount} items)\n";
+                }
+                optionsMessage += "\n¿Cuál deseas registrar? (responde con el número o \"todos\")";
+
+                await _telegramService.SendMessageAsync(chatId, optionsMessage, "HTML", ct);
+                return;
+            }
+
+            // Single section, process directly
+            if (ocrResult.Sections.Count == 1)
+            {
+                var section = ocrResult.Sections[0];
+                var mealDescription = BuildMealDescriptionFromSection(section, ocrResult.Date);
+                
+                // Process as a regular meal description
+                await ProcessAndLogMealFromImageAsync(chatId, userInfo, mealDescription, section, ocrResult.Date, ct);
+            }
+            else
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "❌ No pude extraer información de comida de la imagen. Por favor, intenta con otra imagen o describe tu comida con texto.",
+                    null, ct);
+                userInfo.Conversation.State = ConversationState.AwaitingMealDescription;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing photo for chatId {ChatId}", chatId);
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Ocurrió un error al procesar la imagen. Por favor, intenta nuevamente.",
+                null, ct);
+            userInfo.Conversation.State = ConversationState.AwaitingMealDescription;
+        }
+    }
+
+    private async Task<ImageOcrResult> ProcessImageAsync(byte[] imageBytes, string? caption, CancellationToken ct)
+    {
+        var venezuelaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Venezuela Standard Time");
+        var venezuelaNow = TimeZoneInfo.ConvertTime(DateTime.UtcNow, venezuelaTimeZone);
+
+        // Step 1: Extract text using Windows OCR (local processing)
+        _logger.LogInformation("Running Windows OCR on image...");
+        var rawOcrText = await _ocrService.ExtractTextAsync(imageBytes, "es");
+        
+        if (string.IsNullOrWhiteSpace(rawOcrText))
+        {
+            _logger.LogWarning("Windows OCR extracted no text from image");
+            return new ImageOcrResult { Error = "No se pudo extraer texto de la imagen. La imagen puede estar vacía o el texto no es legible." };
+        }
+        
+        _logger.LogInformation("OCR extracted text: {Text}", rawOcrText);
+
+        // Step 2: Use LLM to interpret and structure the OCR text
+        var prompt = GeminiPrompts.OcrTextInterpretationPrompt
+            .Replace("@OcrText", rawOcrText)
+            .Replace("@UserInstructions", caption ?? "Ninguna")
+            .Replace("@Now", venezuelaNow.ToString("yyyy-MM-ddTHH:mm:ss"));
+
+        // Use Gemini for text interpretation (not vision - uses less quota)
+        var response = await _geminiClient.GenerateTextAsync(prompt, ct);
+        var content = response?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
+
+        if (string.IsNullOrEmpty(content))
+        {
+            // If Gemini fails, return raw OCR as transcription
+            _logger.LogWarning("Gemini interpretation failed, returning raw OCR text");
+            return new ImageOcrResult
+            {
+                Transcription = rawOcrText,
+                NeedsClarification = true,
+                ClarificationQuestions = new List<string>
+                {
+                    "No pude interpretar el texto automáticamente. Por favor describe qué comida deseas registrar de esta transcripción."
+                }
+            };
+        }
+
+        _logger.LogInformation("LLM interpretation: {Response}", content);
+
+        var cleanedJson = RemoveMarkdown(content);
+
+        try
+        {
+            var result = JsonSerializer.Deserialize<ImageOcrResult>(cleanedJson, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+            return result ?? new ImageOcrResult { Error = "No se pudo interpretar la respuesta." };
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "Failed to parse LLM response: {Response}", cleanedJson);
+            // Fallback: return raw OCR text
+            return new ImageOcrResult
+            {
+                Transcription = rawOcrText,
+                NeedsClarification = true,
+                ClarificationQuestions = new List<string>
+                {
+                    "Hubo un error procesando la imagen. Aquí está el texto detectado. ¿Qué deseas registrar?"
+                }
+            };
+        }
+    }
+
+    private static string BuildMealDescriptionFromSection(ImageMealSection section, string? date)
+    {
+        var items = section.Items
+            .Where(i => i.Quantity.HasValue && !string.IsNullOrEmpty(i.Name))
+            .Select(i => $"{i.Quantity}{i.Unit ?? "g"} de {i.Name}")
+            .ToList();
+
+        var mealType = section.MealType.ToLower() switch
+        {
+            "desayuno" => "desayuno",
+            "almuerzo" => "almuerzo", 
+            "cena" => "cena",
+            "merienda" => "merienda",
+            _ => section.MealType.ToLower()
+        };
+
+        var description = $"Para el {mealType}";
+        if (!string.IsNullOrEmpty(date))
+        {
+            description += $" del {date}";
+        }
+        description += ": " + string.Join(", ", items);
+
+        return description;
+    }
+
+    private async Task ProcessAndLogMealFromImageAsync(
+        string chatId,
+        CronometerUserInfo userInfo,
+        string mealDescription,
+        ImageMealSection section,
+        string? dateStr,
+        CancellationToken ct)
+    {
+        // Parse date
+        DateTime date = DateTime.UtcNow;
+        if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var parsedDate))
+        {
+            date = parsedDate;
+        }
+
+        // Build meal request from section
+        var category = section.MealType.ToUpper() switch
+        {
+            "DESAYUNO" => "BREAKFAST",
+            "ALMUERZO" => "LUNCH",
+            "CENA" => "DINNER",
+            "MERIENDA" => "SNACKS",
+            _ => "UNCATEGORIZED"
+        };
+
+        var items = section.Items
+            .Where(i => i.Quantity.HasValue && !string.IsNullOrEmpty(i.Name))
+            .Select(i => new MealItem
+            {
+                Quantity = (float)(i.Quantity ?? 0),
+                Unit = NormalizeUnit(i.Unit),
+                Name = i.Name ?? ""
+            })
+            .ToList();
+
+        if (items.Count == 0)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ No se encontraron items de comida válidos en la imagen.",
+                null, ct);
+            userInfo.Conversation!.State = ConversationState.AwaitingMealDescription;
+            return;
+        }
+
+        var mealRequest = new LogMealRequest
+        {
+            Category = category,
+            Date = date,
+            Items = items,
+            LogTime = date.Date == DateTime.UtcNow.Date
+        };
+
+        // Log the meal
+        await AttemptMealLoggingAsync(chatId, userInfo, mealRequest, ct);
+    }
+
+    private static string NormalizeUnit(string? unit)
+    {
+        if (string.IsNullOrEmpty(unit)) return "grams";
+        
+        return unit.ToLower() switch
+        {
+            "g" or "gr" or "gramos" => "grams",
+            "cucharada" or "cucharadas" or "cda" => "tbsp",
+            "cucharadita" or "cucharaditas" or "cdta" => "tsp",
+            "taza" or "tazas" => "cup",
+            "ml" or "mililitros" => "ml",
+            "unidad" or "unidades" or "u" => "unit",
+            "pequeño" or "pequeña" => "small",
+            "mediano" or "mediana" => "medium",
+            "grande" => "large",
+            _ => unit
+        };
+    }
+
 
     private async Task HandleConversationMessageAsync(string chatId, string text, CancellationToken ct)
     {
@@ -445,7 +811,8 @@ public class CronometerPollingHostedService : BackgroundService
         prompt = prompt.Replace("@UserInput", text);
 
         var openAIResponse = await _openAIClient.GenerateTextAsync(prompt, ct);
-        var foodInfo = openAIResponse?.Choices?.FirstOrDefault()?.Message?.Content;
+        var contentObj = openAIResponse?.Choices?.FirstOrDefault()?.Message?.Content;
+        var foodInfo = contentObj is string s ? s : contentObj?.ToString();
 
         if (string.IsNullOrWhiteSpace(foodInfo))
         {

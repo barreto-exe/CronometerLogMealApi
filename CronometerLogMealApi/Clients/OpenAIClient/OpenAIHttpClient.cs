@@ -39,6 +39,37 @@ public class OpenAIHttpClient
         return await GenerateContentAsync(req, ct);
     }
 
+    /// <summary>
+    /// Analyzes an image using the Vision API.
+    /// </summary>
+    /// <param name="prompt">The text prompt to send along with the image</param>
+    /// <param name="imageBytes">The image bytes to analyze</param>
+    /// <param name="mimeType">The MIME type of the image (default: image/jpeg)</param>
+    public async Task<ChatCompletionResponse?> AnalyzeImageAsync(
+        string prompt, 
+        byte[] imageBytes, 
+        string mimeType = "image/jpeg",
+        CancellationToken ct = default)
+    {
+        var contentParts = new List<ContentPart>
+        {
+            ContentPart.TextContent(prompt),
+            ContentPart.ImageContent(imageBytes, mimeType)
+        };
+
+        var req = new ChatCompletionRequest
+        {
+            Model = _options.VisionModel ?? _options.Model,
+            MaxTokens = 4096,
+            Messages =
+            [
+                new ChatMessage { Role = "user", Content = contentParts }
+            ]
+        };
+
+        return await GenerateContentAsync(req, ct);
+    }
+
     public async Task<ChatCompletionResponse?> GenerateContentAsync(ChatCompletionRequest request, CancellationToken ct = default)
     {
         // Ensure model is set if not provided in request
@@ -57,3 +88,4 @@ public class OpenAIHttpClient
         return JsonSerializer.Deserialize<ChatCompletionResponse>(json, _jsonOptions);
     }
 }
+

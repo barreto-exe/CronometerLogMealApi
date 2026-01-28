@@ -23,7 +23,41 @@ public class GeminiContent
 public class GeminiPart
 {
     [JsonPropertyName("text")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Text { get; set; }
+
+    /// <summary>
+    /// Inline image data for Vision requests.
+    /// </summary>
+    [JsonPropertyName("inline_data")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GeminiInlineData? InlineData { get; set; }
+
+    public static GeminiPart TextPart(string text) => new() { Text = text };
+    
+    public static GeminiPart ImagePart(byte[] imageBytes, string mimeType = "image/jpeg")
+    {
+        return new GeminiPart
+        {
+            InlineData = new GeminiInlineData
+            {
+                MimeType = mimeType,
+                Data = Convert.ToBase64String(imageBytes)
+            }
+        };
+    }
+}
+
+/// <summary>
+/// Inline data for images in Gemini Vision requests.
+/// </summary>
+public class GeminiInlineData
+{
+    [JsonPropertyName("mime_type")]
+    public string MimeType { get; set; } = "image/jpeg";
+
+    [JsonPropertyName("data")]
+    public string Data { get; set; } = string.Empty; // Base64 encoded
 }
 
 public class GenerateContentResponse
@@ -39,3 +73,4 @@ public class GeminiCandidate
     [JsonPropertyName("finish_reason")]
     public string? FinishReason { get; set; }
 }
+
