@@ -2,6 +2,7 @@ using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.CronometerClient.Models;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
 using CronometerLogMealApi.Models;
+using CronometerLogMealApi.Models.UserMemory;
 using CronometerLogMealApi.Requests;
 using F23.StringSimilarity;
 using Microsoft.Extensions.Logging;
@@ -13,11 +14,16 @@ public class CronometerService
 {
     private readonly CronometerHttpClient cronometerHttpClient;
     private readonly ILogger<CronometerService> logger;
+    private readonly UserMemoryService? _memoryService;
 
-    public CronometerService(CronometerHttpClient cronometerHttpClient, ILogger<CronometerService> logger)
+    public CronometerService(
+        CronometerHttpClient cronometerHttpClient, 
+        ILogger<CronometerService> logger,
+        UserMemoryService? memoryService = null)
     {
         this.cronometerHttpClient = cronometerHttpClient;
         this.logger = logger;
+        this._memoryService = memoryService;
     }
 
     /// <summary>
@@ -344,6 +350,7 @@ public class CronometerService
     public async Task<(List<ValidatedMealItem> ValidatedItems, List<string> NotFoundItems)> ValidateMealItemsAsync(
         IEnumerable<MealItem> items,
         AuthPayload auth,
+        string? userId = null,
         CancellationToken cancellationToken = default)
     {
         var validatedItems = new List<ValidatedMealItem>();
@@ -351,9 +358,9 @@ public class CronometerService
 
         foreach (var itemRequest in items)
         {
-            var foodId = await GetFoodId(itemRequest.Name, auth, cancellationToken);
+            var searchResult = await GetFoodWithMemoryAsync(itemRequest.Name, auth, userId, cancellationToken);
             
-            if (foodId == 0)
+            if (searchResult.FoodId == 0)
             {
                 notFoundItems.Add(itemRequest.Name);
                 continue;
@@ -361,7 +368,7 @@ public class CronometerService
 
             var food = (await cronometerHttpClient.GetFoodsAsync(new()
             {
-                Ids = [foodId],
+                Ids = [searchResult.FoodId],
                 Auth = auth,
             }, cancellationToken))
             .Foods?
@@ -384,11 +391,191 @@ public class CronometerService
                 MeasureName = isRawGrams ? "g" : measure.Name,
                 MeasureId = measure.Id,
                 MeasureGrams = measure.Value,
-                IsRawGrams = isRawGrams
+                IsRawGrams = isRawGrams,
+                SourceTab = searchResult.SourceTab,
+                WasResolvedFromAlias = searchResult.WasFromAlias,
+                AliasId = searchResult.AliasId
             });
         }
 
         return (validatedItems, notFoundItems);
+    }
+
+    /// <summary>
+    /// Result of a food search operation.
+    /// </summary>
+    public class FoodSearchResult
+    {
+        public long FoodId { get; set; }
+        public string FoodName { get; set; } = string.Empty;
+        public string SourceTab { get; set; } = string.Empty;
+        public bool WasFromAlias { get; set; }
+        public string? AliasId { get; set; }
+        public List<SearchCandidate> AllCandidates { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Searches for a food with memory (alias) support.
+    /// First checks user aliases, then falls back to API search.
+    /// </summary>
+    public async Task<FoodSearchResult> GetFoodWithMemoryAsync(
+        string query,
+        AuthPayload auth,
+        string? userId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return new FoodSearchResult();
+
+        logger.LogInformation("🔍 Starting food search for: '{Query}' (user: {UserId})", query, userId ?? "anonymous");
+
+        // 1. Check user memory first if available
+        if (!string.IsNullOrWhiteSpace(userId) && _memoryService != null)
+        {
+            try
+            {
+                var alias = await _memoryService.FindAliasAsync(userId, query, cancellationToken);
+                if (alias != null)
+                {
+                    logger.LogInformation("✨ Found alias! '{Query}' -> '{ResolvedName}' (ID: {Id})",
+                        query, alias.ResolvedFoodName, alias.ResolvedFoodId);
+
+                    // Increment usage
+                    await _memoryService.IncrementAliasUsageAsync(alias.Id, cancellationToken);
+
+                    return new FoodSearchResult
+                    {
+                        FoodId = alias.ResolvedFoodId,
+                        FoodName = alias.ResolvedFoodName,
+                        SourceTab = alias.SourceTab,
+                        WasFromAlias = true,
+                        AliasId = alias.Id
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error checking user memory, falling back to API search");
+            }
+        }
+
+        // 2. Fall back to API search
+        var (foodId, foodName, sourceTab, candidates) = await SearchFoodWithCandidatesAsync(query, auth, cancellationToken);
+
+        return new FoodSearchResult
+        {
+            FoodId = foodId,
+            FoodName = foodName,
+            SourceTab = sourceTab,
+            WasFromAlias = false,
+            AllCandidates = candidates
+        };
+    }
+
+    /// <summary>
+    /// Searches for food and returns top candidates for potential selection.
+    /// </summary>
+    public async Task<(long FoodId, string FoodName, string SourceTab, List<SearchCandidate> Candidates)> 
+        SearchFoodWithCandidatesAsync(string query, AuthPayload auth, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return (0, string.Empty, string.Empty, new List<SearchCandidate>());
+
+        var normalizedQuery = NormalizeSearchQuery(query);
+        
+        // Define search tabs with their priority weights
+        var tabsWithPriority = new (string Tab, double PriorityWeight)[]
+        {
+            ("CUSTOM", 3.0),
+            ("FAVOURITES", 2.5),
+            ("COMMON_FOODS", 1.0),
+            ("SUPPLEMENTS", 0.5),
+            ("ALL", 0.4)
+        };
+
+        // Execute all searches in parallel
+        var searchTasks = tabsWithPriority.Select(async t =>
+        {
+            var request = new FindFoodRequest
+            {
+                Query = query,
+                Tab = t.Tab,
+                Auth = auth
+            };
+
+            try
+            {
+                var response = await cronometerHttpClient.FindFoodAsync(request, cancellationToken);
+                var foods = response.Foods?.Take(5).ToList() ?? new List<Food>();
+                
+                logger.LogInformation("  📂 Tab {Tab}: Found {Count} results", t.Tab, foods.Count);
+                
+                return (Tab: t.Tab, Priority: t.PriorityWeight, Foods: foods);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to search in tab {Tab}", t.Tab);
+                return (Tab: t.Tab, Priority: t.PriorityWeight, Foods: new List<Food>());
+            }
+        });
+
+        var searchResults = await Task.WhenAll(searchTasks);
+
+        // Score all candidates
+        var dice = new SorensenDice();
+        var scoredCandidates = searchResults
+            .SelectMany(r => r.Foods.Select(food => new
+            {
+                Food = food,
+                SourceTab = r.Tab,
+                SourcePriority = r.Priority
+            }))
+            .Select(c =>
+            {
+                var normalizedFoodName = NormalizeSearchQuery(c.Food.Name);
+                var similarityScore = dice.Similarity(normalizedFoodName, normalizedQuery);
+                var originalSimilarity = dice.Similarity(c.Food.Name.ToLowerInvariant(), query.ToLowerInvariant());
+                var bestSimilarity = Math.Max(similarityScore, originalSimilarity);
+                
+                var exactMatchBonus = string.Equals(c.Food.Name, query, StringComparison.OrdinalIgnoreCase) ? 10.0 : 0.0;
+                var normalizedExactBonus = string.Equals(normalizedFoodName, normalizedQuery, StringComparison.OrdinalIgnoreCase) ? 5.0 : 0.0;
+                var startsWithBonus = c.Food.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase) ? 2.0 : 0.0;
+                var containsBonus = c.Food.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ? 1.0 : 0.0;
+
+                var compositeScore = (bestSimilarity * c.SourcePriority) + exactMatchBonus + normalizedExactBonus + startsWithBonus + containsBonus;
+
+                return new SearchCandidate
+                {
+                    Food = c.Food,
+                    SourceTab = c.SourceTab,
+                    Score = compositeScore,
+                    SimilarityScore = bestSimilarity
+                };
+            })
+            .OrderByDescending(x => x.Score)
+            .ThenByDescending(x => x.SimilarityScore)
+            .ToList();
+
+        // Log top candidates
+        logger.LogInformation("📊 Top candidates for '{Query}':", query);
+        foreach (var candidate in scoredCandidates.Take(5))
+        {
+            logger.LogInformation("  [{Tab}] '{Name}' | Score: {Score:F2}",
+                candidate.SourceTab, candidate.Food.Name, candidate.Score);
+        }
+
+        var bestMatch = scoredCandidates.FirstOrDefault();
+
+        if (bestMatch == null || bestMatch.Score < 0.2)
+        {
+            logger.LogWarning("❌ No good match found for '{Query}'", query);
+            return (0, string.Empty, string.Empty, scoredCandidates.Take(10).ToList());
+        }
+
+        logger.LogInformation("✅ Selected: '{FoodName}' (ID: {FoodId}) from {Tab}",
+            bestMatch.Food.Name, bestMatch.Food.Id, bestMatch.SourceTab);
+
+        return (bestMatch.Food.Id, bestMatch.Food.Name, bestMatch.SourceTab, scoredCandidates.Take(10).ToList());
     }
 
     /// <summary>
@@ -481,5 +668,13 @@ public class CronometerService
         }
 
         return (defaultMeasure, false);
+    }
+
+    /// <summary>
+    /// Static version of GetSimilarMeasureId for use in other services.
+    /// </summary>
+    public static (Measure Measure, bool IsRawGrams) GetSimilarMeasureIdStatic(IEnumerable<Measure>? measures, string measureName)
+    {
+        return GetSimilarMeasureId(measures, measureName);
     }
 }

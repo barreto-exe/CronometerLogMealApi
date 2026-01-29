@@ -47,6 +47,14 @@ builder.Services.Configure<CronometerLogMealApi.Clients.AzureVisionClient.AzureV
     builder.Configuration.GetSection("AzureVision"));
 builder.Services.AddSingleton<CronometerLogMealApi.Clients.AzureVisionClient.AzureVisionService>();
 
+// Firebase options + UserMemoryService (optional - only registered if ProjectId is configured)
+builder.Services.Configure<FirebaseOptions>(builder.Configuration.GetSection("Firebase"));
+var firebaseProjectId = builder.Configuration["Firebase:ProjectId"];
+if (!string.IsNullOrWhiteSpace(firebaseProjectId))
+{
+    builder.Services.AddSingleton<UserMemoryService>();
+}
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

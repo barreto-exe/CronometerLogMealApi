@@ -48,6 +48,21 @@ public class ValidatedMealItem
     public bool IsRawGrams { get; set; }
 
     /// <summary>
+    /// The source tab where this food was found (for learning purposes).
+    /// </summary>
+    public string SourceTab { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Whether this item was resolved from a saved alias.
+    /// </summary>
+    public bool WasResolvedFromAlias { get; set; }
+
+    /// <summary>
+    /// The alias ID if this was resolved from an alias.
+    /// </summary>
+    public string? AliasId { get; set; }
+
+    /// <summary>
     /// Gets the display quantity for showing to the user.
     /// If IsRawGrams is true, shows the raw gram value; otherwise shows the measure quantity.
     /// </summary>

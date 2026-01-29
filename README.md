@@ -69,6 +69,10 @@ Create an `appsettings.json` file in the root of the project (or use User Secret
   "AzureVision": {
     "Endpoint": "YOUR_AZURE_VISION_ENDPOINT",
     "ApiKey": "YOUR_AZURE_VISION_API_KEY"
+  },
+  "Firebase": {
+    "ProjectId": "YOUR_FIREBASE_PROJECT_ID",
+    "CredentialsPath": "path/to/firebase-credentials.json"
   }
 }
 ```
@@ -77,6 +81,33 @@ Create an `appsettings.json` file in the root of the project (or use User Secret
 *   **OpenAI**: Used by the main bot logic to parse meals.
 *   **Gemini**: Used for specific AI tasks. Note that some models/features might require browser cookies (`__Secure-1PSID` and `__Secure-1PSIDTS`) to bypass certain restrictions or access specific capabilities.
 *   **AzureVision**: (Optional) Used for OCR (Optical Character Recognition) to extract text from images sent to the bot.
+*   **Firebase**: (Optional) Used for the memory system to remember user food aliases and preferences.
+
+### Firebase Setup (Optional)
+
+The memory system uses Firebase Firestore to remember food aliases and user preferences. To enable it:
+
+1. **Create a Firebase Project**: Go to [Firebase Console](https://console.firebase.google.com/) and create a new project.
+
+2. **Enable Firestore**: In your project, go to Build → Firestore Database and create a database in production or test mode.
+
+3. **Generate Credentials**:
+   - Go to Project Settings → Service Accounts
+   - Click "Generate new private key"
+   - Open the JSON file and copy the values you need
+
+4. **Configure in appsettings.json**:
+   ```json
+   "Firebase": {
+     "ProjectId": "your-project-id",
+     "ClientEmail": "firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com",
+     "PrivateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADA...your-key...\n-----END PRIVATE KEY-----\n"
+   }
+   ```
+   
+   > **Note**: Copy `client_email` and `private_key` directly from the downloaded JSON. The `\n` in the private key will be handled automatically.
+
+If `ProjectId` is empty, the app will run without memory features.
 
 ## Running the Project
 
@@ -98,6 +129,28 @@ Create an `appsettings.json` file in the root of the project (or use User Secret
     *   **Log a Meal**: Send a message describing your food.
         *   *Example*: "Desayuno: 2 huevos revueltos y 1 pan tostado"
         *   *Example*: "Lunch: 150g chicken breast and 1 cup of rice"
+
+## Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/login <email> <password>` | Login to Cronometer |
+| `/start` | Start a new meal logging session |
+| `/save` | Save the confirmed meal to Cronometer |
+| `/cancel` | Cancel the current session |
+| `/continue` | Confirm OCR text after sending a photo |
+| `/preferences` | Manage your saved food aliases |
+| `/search <query>` | Search for foods in Cronometer |
+
+## Memory System
+
+The bot can learn your food preferences over time:
+
+- **Automatic Learning**: After saving a meal with `/save`, the bot will ask if you want to remember the food mappings (e.g., "pollo" → "Chicken Breast, Raw").
+
+- **Manual Aliases**: Use `/preferences` to create custom aliases. For example, map "mi proteina" to your specific protein powder.
+
+- **Search Alternatives**: When confirming a meal, respond with the item number to search for alternatives. The bot remembers your choices.
 
 ## API Endpoints
 

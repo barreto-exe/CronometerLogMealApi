@@ -1,3 +1,5 @@
+using CronometerLogMealApi.Models.UserMemory;
+
 namespace CronometerLogMealApi.Models;
 
 /// <summary>
@@ -51,6 +53,31 @@ public class ConversationSession
     public string? OcrExtractedText { get; set; }
 
     /// <summary>
+    /// Pending learnings to be saved after /save confirmation.
+    /// </summary>
+    public List<UserMemory.PendingLearning> PendingLearnings { get; set; } = new();
+
+    /// <summary>
+    /// Current alias input term being created (for /preferences flow).
+    /// </summary>
+    public string? CurrentAliasInputTerm { get; set; }
+
+    /// <summary>
+    /// Current food search results for selection (for manual alias creation or re-search).
+    /// </summary>
+    public List<UserMemory.SearchCandidate> CurrentSearchResults { get; set; } = new();
+
+    /// <summary>
+    /// Index of the item being searched for (when user requests alternative search).
+    /// </summary>
+    public int? CurrentSearchItemIndex { get; set; }
+
+    /// <summary>
+    /// The alias ID pending deletion confirmation.
+    /// </summary>
+    public string? PendingDeleteAliasId { get; set; }
+
+    /// <summary>
     /// Session timeout duration (default: 10 minutes).
     /// </summary>
     public static readonly TimeSpan SessionTimeout = TimeSpan.FromMinutes(10);
@@ -102,7 +129,42 @@ public enum ConversationState
     /// <summary>
     /// Waiting for user to confirm the meal before saving.
     /// </summary>
-    AwaitingConfirmation
+    AwaitingConfirmation,
+
+    /// <summary>
+    /// Waiting for user to confirm learning (memory save).
+    /// </summary>
+    AwaitingMemoryConfirmation,
+
+    /// <summary>
+    /// Waiting for user to select a preference action in /preferences menu.
+    /// </summary>
+    AwaitingPreferenceAction,
+
+    /// <summary>
+    /// Waiting for user to input an alias (term -> food).
+    /// </summary>
+    AwaitingAliasInput,
+
+    /// <summary>
+    /// Waiting for user to search for a food to create alias.
+    /// </summary>
+    AwaitingFoodSearch,
+
+    /// <summary>
+    /// Waiting for user to select a food from search results.
+    /// </summary>
+    AwaitingFoodSelection,
+
+    /// <summary>
+    /// Waiting for user to confirm alias deletion.
+    /// </summary>
+    AwaitingAliasDeleteConfirm,
+
+    /// <summary>
+    /// Waiting for user to select from multiple food search results.
+    /// </summary>
+    AwaitingFoodSearchSelection
 }
 
 /// <summary>

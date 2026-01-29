@@ -9,6 +9,7 @@ using CronometerLogMealApi.Clients.TelegramClient.Models;
 using CronometerLogMealApi.Clients.TelegramClient.Requests;
 using CronometerLogMealApi.Clients.AzureVisionClient;
 using CronometerLogMealApi.Models;
+using CronometerLogMealApi.Models.UserMemory;
 using CronometerLogMealApi.Requests;
 
 namespace CronometerLogMealApi.Services;
@@ -25,6 +26,7 @@ public class CronometerPollingHostedService : BackgroundService
     private readonly OpenAIHttpClient _openAIClient;
     private readonly CronometerService _cronometerService;
     private readonly AzureVisionService _azureVisionService;
+    private readonly UserMemoryService? _memoryService;
 
     public CronometerPollingHostedService(
         ILogger<CronometerPollingHostedService> logger, 
@@ -33,7 +35,8 @@ public class CronometerPollingHostedService : BackgroundService
         CronometerHttpClient cronometerClient, 
         OpenAIHttpClient openAIClient, 
         CronometerService cronometerService,
-        AzureVisionService azureVisionService)
+        AzureVisionService azureVisionService,
+        UserMemoryService? memoryService = null)
     {
         _logger = logger;
         _telegramService = service;
@@ -42,6 +45,7 @@ public class CronometerPollingHostedService : BackgroundService
         _openAIClient = openAIClient;
         _cronometerService = cronometerService;
         _azureVisionService = azureVisionService;
+        _memoryService = memoryService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -142,6 +146,18 @@ public class CronometerPollingHostedService : BackgroundService
             if (IsCommand(text, "/continue") || IsCommand(text, "/continuar"))
             {
                 await HandleContinueCommandAsync(chatIdStr, ct);
+                return;
+            }
+
+            if (IsCommand(text, "/preferences") || IsCommand(text, "/preferencias"))
+            {
+                await HandlePreferencesCommandAsync(chatIdStr, ct);
+                return;
+            }
+
+            if (IsCommand(text, "/search") || IsCommand(text, "/buscar"))
+            {
+                await HandleSearchCommandAsync(chatIdStr, text, ct);
                 return;
             }
 
@@ -484,6 +500,34 @@ public class CronometerPollingHostedService : BackgroundService
                 await HandleConfirmationResponseAsync(chatId, userInfo, text, ct);
                 break;
 
+            case ConversationState.AwaitingMemoryConfirmation:
+                await HandleMemoryConfirmationResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingPreferenceAction:
+                await HandlePreferenceActionResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingAliasInput:
+                await HandleAliasInputResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingFoodSearch:
+                await HandleFoodSearchResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingFoodSelection:
+                await HandleFoodSelectionResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingAliasDeleteConfirm:
+                await HandleAliasDeleteConfirmResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingFoodSearchSelection:
+                await HandleFoodSearchSelectionResponseAsync(chatId, userInfo, text, ct);
+                break;
+
             case ConversationState.Processing:
                 await _telegramService.SendMessageAsync(chatId,
                     "⏳ Aún estoy procesando tu solicitud anterior. Por favor, espera un momento.",
@@ -627,6 +671,16 @@ public class CronometerPollingHostedService : BackgroundService
 
     private async Task HandleConfirmationResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
     {
+        // Check if user wants to search alternatives for a specific item (responds with number)
+        if (int.TryParse(text.Trim(), out int itemIndex) && 
+            userInfo.Conversation?.ValidatedFoods != null &&
+            itemIndex >= 1 && itemIndex <= userInfo.Conversation.ValidatedFoods.Count)
+        {
+            // User wants to search alternatives for item at index
+            await HandleAlternativeSearchAsync(chatId, userInfo, itemIndex - 1, ct);
+            return;
+        }
+
         // If user didn't use /save but sent text, assume they want to change something
         // Treat as a new description or clarification
         await _telegramService.SendMessageAsync(chatId, 
@@ -786,11 +840,32 @@ public class CronometerPollingHostedService : BackgroundService
             }
 
             // Success
-            userInfo.Conversation = null; // Clear session
+            var pendingLearnings = userInfo.Conversation.PendingLearnings;
+            
+            // Check if there are learnings to save and memory service is available
+            if (_memoryService != null && pendingLearnings.Count > 0)
+            {
+                // Ask user if they want to remember these mappings
+                userInfo.Conversation.State = ConversationState.AwaitingMemoryConfirmation;
 
-            await _telegramService.SendMessageAsync(chatId,
-                "✅ <b>¡Guardado exitoso!</b>\n\nTu comida ha sido registrada.",
-                "HTML", ct);
+                var learningsMsg = "✅ <b>¡Guardado exitoso!</b>\n\n" +
+                    "🧠 <b>¿Quieres que recuerde estas asociaciones?</b>\n\n" +
+                    string.Join("\n", pendingLearnings.Select((l, i) => 
+                        $"{i + 1}. \"{l.OriginalTerm}\" → <b>{l.ResolvedFoodName}</b>")) +
+                    "\n\n• Responde <b>si</b> para guardar todas\n" +
+                    "• Responde con los números (ej: 1,3) para guardar solo algunas\n" +
+                    "• Responde <b>no</b> para no guardar ninguna";
+
+                await _telegramService.SendMessageAsync(chatId, learningsMsg, "HTML", ct);
+            }
+            else
+            {
+                // No learnings to save, just finish
+                userInfo.Conversation = null;
+                await _telegramService.SendMessageAsync(chatId,
+                    "✅ <b>¡Guardado exitoso!</b>\n\nTu comida ha sido registrada.",
+                    "HTML", ct);
+            }
 
         }
         catch (Exception ex)
@@ -804,10 +879,11 @@ public class CronometerPollingHostedService : BackgroundService
     {
         await _telegramService.SendMessageAsync(chatId, "🔍 Validando con Cronometer...", null, ct);
 
-        // Perform validation instead of direct logging
+        // Perform validation with memory support
         var (validatedItems, notFoundItems) = await _cronometerService.ValidateMealItemsAsync(
             request.Items,
             new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! },
+            chatId, // Pass userId for memory lookup
             ct);
 
         if (notFoundItems.Count > 0)
@@ -827,7 +903,8 @@ public class CronometerPollingHostedService : BackgroundService
              await _telegramService.SendMessageAsync(chatId,
                 "⚠️ <b>No encontré estos alimentos:</b>\n\n" +
                 notFoundList + "\n\n" +
-                "Por favor, dame nombres alternativos (ej: \"pollo\" -> \"pechuga de pollo\").",
+                "Por favor, dame nombres alternativos (ej: \"pollo\" -> \"pechuga de pollo\").\n\n" +
+                "💡 Tip: Usa /search [nombre] para buscar manualmente.",
                 "HTML", ct);
             return;
         }
@@ -837,15 +914,35 @@ public class CronometerPollingHostedService : BackgroundService
         userInfo.Conversation.ValidatedFoods = validatedItems;
         userInfo.Conversation.State = ConversationState.AwaitingConfirmation;
 
-        // Build summary message - use DisplayQuantity for proper formatting
-        var itemsSummary = string.Join("\n", validatedItems.Select(i => 
-            $"• {i.DisplayQuantity} de <b>{i.FoodName}</b>"));
+        // Prepare pending learnings for items that weren't resolved from aliases
+        userInfo.Conversation.PendingLearnings = validatedItems
+            .Where(v => !v.WasResolvedFromAlias && 
+                       !string.Equals(v.OriginalName, v.FoodName, StringComparison.OrdinalIgnoreCase))
+            .Select(v => new PendingLearning
+            {
+                OriginalTerm = v.OriginalName,
+                ResolvedFoodName = v.FoodName,
+                ResolvedFoodId = v.FoodId,
+                SourceTab = v.SourceTab,
+                IsFoodAlias = true
+            })
+            .ToList();
+
+        // Build summary message
+        var itemsSummary = string.Join("\n", validatedItems.Select((item, idx) =>
+        {
+            var aliasIndicator = item.WasResolvedFromAlias ? " 🧠" : "";
+            return $"{idx + 1}. {item.DisplayQuantity} de <b>{item.FoodName}</b>{aliasIndicator}";
+        }));
 
         var msg = $"💾 Estás a punto de registrar:\n\n" +
                   $"<b>Hora:</b> {request.Date:h:mm tt}\n" +
                   $"<b>Tipo:</b> {request.Category.ToUpper()}\n\n" +
                   $"<b>Alimentos:</b>\n{itemsSummary}\n\n" +
-                  $"¿Deseas hacer algún cambio? Si todo está bien, guarda los cambios con el comando <b>/save</b>.";
+                  "🧠 = reconocido desde tu memoria\n\n" +
+                  "¿Deseas hacer algún cambio?\n" +
+                  "• Responde con el número del item para <b>buscar alternativas</b>\n" +
+                  "• Usa <b>/save</b> para guardar los cambios";
 
         await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
     }
@@ -1007,9 +1104,517 @@ public class CronometerPollingHostedService : BackgroundService
 
         var successReply =
             "✅ <b>Inicio de sesión exitoso.</b>\n\n" +
-            "Ahora puedes registrar tus comidas usando el comando /start.";
+            "Ahora puedes registrar tus comidas usando el comando /start.\n" +
+            "Usa /preferences para ver y gestionar tus preferencias guardadas.";
         await _telegramService.SendMessageAsync(chatId, successReply, "HTML", ct);
     }
+
+    #region Memory and Preferences Handlers
+
+    private async Task HandlePreferencesCommandAsync(string chatId, CancellationToken ct)
+    {
+        if (_memoryService == null)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ El servicio de memoria no está disponible.", null, ct);
+            return;
+        }
+
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo == null ||
+            string.IsNullOrWhiteSpace(userInfo.SessionKey))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ Primero debes iniciar sesión con:\n<b>/login &lt;email&gt; &lt;password&gt;</b>",
+                "HTML", ct);
+            return;
+        }
+
+        // Initialize conversation for preferences if needed
+        if (userInfo.Conversation == null || userInfo.Conversation.IsExpired)
+        {
+            userInfo.Conversation = new ConversationSession
+            {
+                StartedAt = DateTime.UtcNow,
+                LastActivityAt = DateTime.UtcNow
+            };
+        }
+
+        userInfo.Conversation.State = ConversationState.AwaitingPreferenceAction;
+        userInfo.Conversation.Touch();
+
+        var aliases = await _memoryService.GetUserAliasesAsync(chatId, ct);
+
+        var msg = "⚙️ <b>Gestión de Preferencias</b>\n\n";
+
+        if (aliases.Count > 0)
+        {
+            msg += "<b>Tus alias guardados:</b>\n";
+            msg += string.Join("\n", aliases.Take(10).Select((a, i) => 
+                $"{i + 1}. \"{a.InputTerm}\" → {a.ResolvedFoodName} ({a.UseCount}x)"));
+            
+            if (aliases.Count > 10)
+                msg += $"\n... y {aliases.Count - 10} más";
+            
+            msg += "\n\n";
+        }
+        else
+        {
+            msg += "<i>No tienes alias guardados todavía.</i>\n\n";
+        }
+
+        msg += "<b>Opciones:</b>\n" +
+               "1️⃣ <b>Crear</b> nuevo alias\n" +
+               "2️⃣ <b>Eliminar</b> un alias\n" +
+               "3️⃣ <b>Salir</b>\n\n" +
+               "Responde con el número de la opción.";
+
+        await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
+    }
+
+    private async Task HandlePreferenceActionResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+        var trimmed = text.Trim().ToLowerInvariant();
+
+        if (trimmed == "1" || trimmed.Contains("crear") || trimmed.Contains("nuevo"))
+        {
+            userInfo.Conversation.State = ConversationState.AwaitingAliasInput;
+            await _telegramService.SendMessageAsync(chatId,
+                "📝 <b>Crear nuevo alias</b>\n\n" +
+                "Escribe el término que usas normalmente.\n" +
+                "Ejemplo: \"pollo\", \"arroz integral\", \"mi proteina\"",
+                "HTML", ct);
+        }
+        else if (trimmed == "2" || trimmed.Contains("eliminar") || trimmed.Contains("borrar"))
+        {
+            if (_memoryService == null)
+            {
+                await _telegramService.SendMessageAsync(chatId, "⚠️ Servicio no disponible.", null, ct);
+                return;
+            }
+
+            var aliases = await _memoryService.GetUserAliasesAsync(chatId, ct);
+            if (aliases.Count == 0)
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "No tienes alias para eliminar. Usa /preferences para volver al menú.",
+                    null, ct);
+                userInfo.Conversation.State = ConversationState.Idle;
+                return;
+            }
+
+            userInfo.Conversation.State = ConversationState.AwaitingAliasDeleteConfirm;
+            var msg = "🗑️ <b>Eliminar alias</b>\n\n" +
+                      "Selecciona el número del alias a eliminar:\n\n" +
+                      string.Join("\n", aliases.Take(15).Select((a, i) => 
+                          $"{i + 1}. \"{a.InputTerm}\" → {a.ResolvedFoodName}"));
+
+            await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
+        }
+        else if (trimmed == "3" || trimmed.Contains("salir") || trimmed.Contains("cancelar"))
+        {
+            userInfo.Conversation.State = ConversationState.Idle;
+            await _telegramService.SendMessageAsync(chatId,
+                "👋 Saliste del menú de preferencias. Usa /start para registrar comidas.",
+                null, ct);
+        }
+        else
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "Por favor, responde con 1, 2 o 3.",
+                null, ct);
+        }
+    }
+
+    private async Task HandleAliasInputResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+        userInfo.Conversation.CurrentAliasInputTerm = text.Trim();
+        userInfo.Conversation.State = ConversationState.AwaitingFoodSearch;
+
+        await _telegramService.SendMessageAsync(chatId,
+            $"Término guardado: <b>{text.Trim()}</b>\n\n" +
+            "Ahora escribe el nombre del alimento a buscar en Cronometer:",
+            "HTML", ct);
+    }
+
+    private async Task HandleFoodSearchResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+        await _telegramService.SendMessageAsync(chatId, "🔍 Buscando...", null, ct);
+
+        try
+        {
+            var auth = new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! };
+            var (_, _, _, candidates) = await _cronometerService.SearchFoodWithCandidatesAsync(text.Trim(), auth, ct);
+
+            if (candidates.Count == 0)
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "❌ No encontré resultados. Intenta con otro término de búsqueda:",
+                    null, ct);
+                return;
+            }
+
+            userInfo.Conversation.CurrentSearchResults = candidates;
+            userInfo.Conversation.State = ConversationState.AwaitingFoodSelection;
+
+            var msg = "📋 <b>Resultados de búsqueda:</b>\n\n" +
+                      string.Join("\n", candidates.Take(10).Select((c, i) => 
+                          $"{i + 1}. {c.Food.Name} <i>[{c.SourceTab}]</i>")) +
+                      "\n\nResponde con el número para seleccionar, o escribe otro término para buscar de nuevo.";
+
+            await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching food for alias");
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Error al buscar. Intenta de nuevo.",
+                null, ct);
+        }
+    }
+
+    private async Task HandleFoodSelectionResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+
+        // Check if user typed a number
+        if (int.TryParse(text.Trim(), out int selection) && 
+            selection >= 1 && 
+            selection <= userInfo.Conversation.CurrentSearchResults.Count)
+        {
+            var selected = userInfo.Conversation.CurrentSearchResults[selection - 1];
+            var inputTerm = userInfo.Conversation.CurrentAliasInputTerm ?? text;
+
+            if (_memoryService != null)
+            {
+                await _memoryService.SaveAliasAsync(
+                    chatId,
+                    inputTerm,
+                    selected.Food.Name,
+                    selected.Food.Id,
+                    selected.SourceTab,
+                    isManual: true,
+                    ct);
+
+                await _telegramService.SendMessageAsync(chatId,
+                    $"✅ <b>Alias guardado!</b>\n\n" +
+                    $"\"{inputTerm}\" → {selected.Food.Name}\n\n" +
+                    "Usa /preferences para ver todos tus alias.",
+                    "HTML", ct);
+            }
+
+            // Reset state
+            userInfo.Conversation.CurrentAliasInputTerm = null;
+            userInfo.Conversation.CurrentSearchResults.Clear();
+            userInfo.Conversation.State = ConversationState.Idle;
+        }
+        else
+        {
+            // User typed a new search term
+            await HandleFoodSearchResponseAsync(chatId, userInfo, text, ct);
+        }
+    }
+
+    private async Task HandleAliasDeleteConfirmResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+
+        if (_memoryService == null)
+        {
+            await _telegramService.SendMessageAsync(chatId, "⚠️ Servicio no disponible.", null, ct);
+            return;
+        }
+
+        var aliases = await _memoryService.GetUserAliasesAsync(chatId, ct);
+
+        if (int.TryParse(text.Trim(), out int selection) && selection >= 1 && selection <= aliases.Count)
+        {
+            var aliasToDelete = aliases[selection - 1];
+            await _memoryService.DeleteAliasAsync(aliasToDelete.Id, ct);
+
+            await _telegramService.SendMessageAsync(chatId,
+                $"🗑️ Alias eliminado: \"{aliasToDelete.InputTerm}\" → {aliasToDelete.ResolvedFoodName}\n\n" +
+                "Usa /preferences para volver al menú.",
+                null, ct);
+
+            userInfo.Conversation.State = ConversationState.Idle;
+        }
+        else
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "Por favor, responde con un número válido o /cancel para salir.",
+                null, ct);
+        }
+    }
+
+    private async Task HandleMemoryConfirmationResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+        var trimmed = text.Trim().ToLowerInvariant();
+        var pendingLearnings = userInfo.Conversation.PendingLearnings;
+
+        if (_memoryService == null || pendingLearnings.Count == 0)
+        {
+            userInfo.Conversation = null;
+            await _telegramService.SendMessageAsync(chatId,
+                "✅ Listo. Usa /start para registrar otra comida.",
+                null, ct);
+            return;
+        }
+
+        List<PendingLearning> learningsToSave = new();
+
+        if (trimmed == "si" || trimmed == "sí" || trimmed == "yes" || trimmed == "s")
+        {
+            // Save all learnings
+            learningsToSave = pendingLearnings;
+        }
+        else if (trimmed == "no" || trimmed == "n")
+        {
+            // Don't save any
+            userInfo.Conversation = null;
+            await _telegramService.SendMessageAsync(chatId,
+                "👍 Entendido. No se guardaron preferencias.\nUsa /start para registrar otra comida.",
+                null, ct);
+            return;
+        }
+        else
+        {
+            // Try to parse specific numbers (e.g., "1,3" or "1 3")
+            var numbers = System.Text.RegularExpressions.Regex.Matches(trimmed, @"\d+")
+                .Select(m => int.TryParse(m.Value, out int n) ? n : 0)
+                .Where(n => n >= 1 && n <= pendingLearnings.Count)
+                .ToList();
+
+            if (numbers.Count > 0)
+            {
+                learningsToSave = numbers.Select(n => pendingLearnings[n - 1]).ToList();
+            }
+            else
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "Por favor, responde 'si', 'no', o los números de las preferencias a guardar (ej: 1,3).",
+                    null, ct);
+                return;
+            }
+        }
+
+        // Save the selected learnings
+        foreach (var learning in learningsToSave)
+        {
+            try
+            {
+                await _memoryService.SaveAliasAsync(
+                    chatId,
+                    learning.OriginalTerm,
+                    learning.ResolvedFoodName,
+                    learning.ResolvedFoodId,
+                    learning.SourceTab,
+                    isManual: false,
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to save alias for {Term}", learning.OriginalTerm);
+            }
+        }
+
+        userInfo.Conversation = null;
+        await _telegramService.SendMessageAsync(chatId,
+            $"🧠 <b>¡{learningsToSave.Count} preferencia(s) guardada(s)!</b>\n\n" +
+            "La próxima vez que uses estos términos, los reconoceré automáticamente.\n" +
+            "Usa /start para registrar otra comida o /preferences para ver tus preferencias.",
+            "HTML", ct);
+    }
+
+    private async Task HandleSearchCommandAsync(string chatId, string text, CancellationToken ct)
+    {
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo == null ||
+            string.IsNullOrWhiteSpace(userInfo.SessionKey))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ Primero debes iniciar sesión con:\n<b>/login &lt;email&gt; &lt;password&gt;</b>",
+                "HTML", ct);
+            return;
+        }
+
+        // Extract search query from command
+        var query = text.Replace("/search", "", StringComparison.OrdinalIgnoreCase)
+                       .Replace("/buscar", "", StringComparison.OrdinalIgnoreCase)
+                       .Trim();
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "Uso: /search [nombre del alimento]\nEjemplo: /search chicken breast",
+                null, ct);
+            return;
+        }
+
+        await _telegramService.SendMessageAsync(chatId, "🔍 Buscando...", null, ct);
+
+        try
+        {
+            var auth = new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! };
+            var (_, _, _, candidates) = await _cronometerService.SearchFoodWithCandidatesAsync(query, auth, ct);
+
+            if (candidates.Count == 0)
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    $"❌ No encontré resultados para \"{query}\".",
+                    null, ct);
+                return;
+            }
+
+            var msg = $"📋 <b>Resultados para \"{query}\":</b>\n\n" +
+                      string.Join("\n", candidates.Take(10).Select((c, i) => 
+                          $"{i + 1}. {c.Food.Name} <i>[{c.SourceTab}]</i> (Score: {c.Score:F2})"));
+
+            await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in search command");
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Error al buscar. Intenta de nuevo.",
+                null, ct);
+        }
+    }
+
+    private async Task HandleAlternativeSearchAsync(string chatId, CronometerUserInfo userInfo, int itemIndex, CancellationToken ct)
+    {
+        var item = userInfo.Conversation!.ValidatedFoods[itemIndex];
+        
+        await _telegramService.SendMessageAsync(chatId, 
+            $"🔍 Buscando alternativas para: <b>{item.OriginalName}</b>...", 
+            "HTML", ct);
+
+        try
+        {
+            var auth = new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! };
+            var (_, _, _, candidates) = await _cronometerService.SearchFoodWithCandidatesAsync(item.OriginalName, auth, ct);
+
+            if (candidates.Count <= 1)
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "No hay alternativas disponibles. Intenta escribir un nombre diferente.",
+                    null, ct);
+                return;
+            }
+
+            // Store context for selection
+            userInfo.Conversation.CurrentSearchResults = candidates;
+            userInfo.Conversation.CurrentSearchItemIndex = itemIndex;
+            userInfo.Conversation.State = ConversationState.AwaitingFoodSearchSelection;
+
+            var msg = $"📋 <b>Alternativas para \"{item.OriginalName}\":</b>\n" +
+                      $"(Actualmente: {item.FoodName})\n\n" +
+                      string.Join("\n", candidates.Take(10).Select((c, i) => 
+                      {
+                          var current = c.Food.Id == item.FoodId ? " ✓" : "";
+                          return $"{i + 1}. {c.Food.Name} <i>[{c.SourceTab}]</i>{current}";
+                      })) +
+                      "\n\nResponde con el número para seleccionar, o /cancel para mantener el actual.";
+
+            await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error searching alternatives");
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Error al buscar alternativas. Intenta de nuevo.",
+                null, ct);
+        }
+    }
+
+    private async Task HandleFoodSearchSelectionResponseAsync(string chatId, CronometerUserInfo userInfo, string text, CancellationToken ct)
+    {
+        userInfo.Conversation!.Touch();
+
+        if (!int.TryParse(text.Trim(), out int selection) || 
+            selection < 1 || 
+            selection > userInfo.Conversation.CurrentSearchResults.Count)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "Por favor, responde con un número válido o /cancel.",
+                null, ct);
+            return;
+        }
+
+        var selected = userInfo.Conversation.CurrentSearchResults[selection - 1];
+        var itemIndex = userInfo.Conversation.CurrentSearchItemIndex ?? 0;
+
+        // Get full food info
+        var auth = new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! };
+        var food = (await _cronometerClient.GetFoodsAsync(new()
+        {
+            Ids = [selected.Food.Id],
+            Auth = auth,
+        }, ct)).Foods?.FirstOrDefault();
+
+        if (food == null)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Error al obtener información del alimento.",
+                null, ct);
+            return;
+        }
+
+        // Update the validated item
+        var item = userInfo.Conversation.ValidatedFoods[itemIndex];
+        var originalName = item.OriginalName;
+        var (measure, isRawGrams) = CronometerService.GetSimilarMeasureIdStatic(food.Measures, item.MeasureName);
+
+        // Update with new food
+        item.FoodName = food.Name;
+        item.FoodId = food.Id;
+        item.MeasureId = measure.Id;
+        item.MeasureGrams = measure.Value;
+        item.MeasureName = isRawGrams ? "g" : measure.Name;
+        item.IsRawGrams = isRawGrams;
+        item.SourceTab = selected.SourceTab;
+        item.WasResolvedFromAlias = false;
+        item.AliasId = null;
+
+        // Add to pending learnings (since user explicitly chose this)
+        if (!userInfo.Conversation.PendingLearnings.Any(p => 
+            p.OriginalTerm.Equals(originalName, StringComparison.OrdinalIgnoreCase)))
+        {
+            userInfo.Conversation.PendingLearnings.Add(new PendingLearning
+            {
+                OriginalTerm = originalName,
+                ResolvedFoodName = food.Name,
+                ResolvedFoodId = food.Id,
+                SourceTab = selected.SourceTab,
+                IsFoodAlias = true
+            });
+        }
+
+        // Clear search context
+        userInfo.Conversation.CurrentSearchResults.Clear();
+        userInfo.Conversation.CurrentSearchItemIndex = null;
+        userInfo.Conversation.State = ConversationState.AwaitingConfirmation;
+
+        // Show updated list
+        var itemsSummary = string.Join("\n", userInfo.Conversation.ValidatedFoods.Select((i, idx) =>
+        {
+            var aliasIndicator = i.WasResolvedFromAlias ? " 🧠" : "";
+            var changedIndicator = idx == itemIndex ? " ✏️" : "";
+            return $"{idx + 1}. {i.DisplayQuantity} de <b>{i.FoodName}</b>{aliasIndicator}{changedIndicator}";
+        }));
+
+        var msg = $"✅ <b>Actualizado!</b>\n\n" +
+                  $"<b>Alimentos:</b>\n{itemsSummary}\n\n" +
+                  "✏️ = modificado\n" +
+                  "🧠 = desde tu memoria\n\n" +
+                  "Usa <b>/save</b> para guardar o responde con un número para más cambios.";
+
+        await _telegramService.SendMessageAsync(chatId, msg, "HTML", ct);
+    }
+
+    #endregion
 
     private string RemoveMarkdown(string text)
     {
