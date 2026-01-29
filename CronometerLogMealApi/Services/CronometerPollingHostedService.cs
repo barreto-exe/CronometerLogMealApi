@@ -4,7 +4,10 @@ using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
 using CronometerLogMealApi.Clients.OpenAIClient;
 using CronometerLogMealApi.Clients.GeminiClient;
+using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
+using CronometerLogMealApi.Clients.TelegramClient.Requests;
+using CronometerLogMealApi.Clients.AzureVisionClient;
 using CronometerLogMealApi.Models;
 using CronometerLogMealApi.Requests;
 
@@ -17,17 +20,28 @@ public class CronometerPollingHostedService : BackgroundService
 
     private readonly ILogger<CronometerPollingHostedService> _logger;
     private readonly TelegramService _telegramService;
+    private readonly TelegramHttpClient _telegramClient;
     private readonly CronometerHttpClient _cronometerClient;
     private readonly OpenAIHttpClient _openAIClient;
     private readonly CronometerService _cronometerService;
+    private readonly AzureVisionService _azureVisionService;
 
-    public CronometerPollingHostedService(ILogger<CronometerPollingHostedService> logger, TelegramService service, CronometerHttpClient cronometerClient, OpenAIHttpClient openAIClient, CronometerService cronometerService)
+    public CronometerPollingHostedService(
+        ILogger<CronometerPollingHostedService> logger, 
+        TelegramService service, 
+        TelegramHttpClient telegramClient,
+        CronometerHttpClient cronometerClient, 
+        OpenAIHttpClient openAIClient, 
+        CronometerService cronometerService,
+        AzureVisionService azureVisionService)
     {
         _logger = logger;
         _telegramService = service;
+        _telegramClient = telegramClient;
         _cronometerClient = cronometerClient;
         _openAIClient = openAIClient;
         _cronometerService = cronometerService;
+        _azureVisionService = azureVisionService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -72,6 +86,16 @@ public class CronometerPollingHostedService : BackgroundService
         var msg = update.Message ?? update.EditedMessage;
         var text = msg?.Text;
         var chatId = msg?.Chat?.Id;
+        var photo = msg?.Photo;
+        var caption = msg?.Caption;
+        
+        // Handle photo messages (OCR flow)
+        if (photo != null && photo.Count > 0 && chatId.HasValue)
+        {
+            var chatIdStr = chatId.Value.ToString();
+            await HandlePhotoMessageAsync(chatIdStr, photo, caption, ct);
+            return;
+        }
         
         if (!string.IsNullOrWhiteSpace(text) && chatId.HasValue)
         {
@@ -115,6 +139,12 @@ public class CronometerPollingHostedService : BackgroundService
                 return;
             }
 
+            if (IsCommand(text, "/continue") || IsCommand(text, "/continuar"))
+            {
+                await HandleContinueCommandAsync(chatIdStr, ct);
+                return;
+            }
+
             // Route based on conversation state
             await HandleConversationMessageAsync(chatIdStr, text, ct);
         }
@@ -133,6 +163,101 @@ public class CronometerPollingHostedService : BackgroundService
 
         var lower = text.Trim().ToLowerInvariant();
         return lower.Contains("login") || lower.Contains("log in") || lower.Contains("sign in");
+    }
+
+    private async Task HandlePhotoMessageAsync(string chatId, List<TelegramPhotoSize> photos, string? caption, CancellationToken ct)
+    {
+        // Check if user is logged in
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo == null ||
+            string.IsNullOrWhiteSpace(userInfo.SessionKey))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ Primero debes iniciar sesión con:\n<b>/login &lt;email&gt; &lt;password&gt;</b>",
+                "HTML", ct);
+            return;
+        }
+
+        // Check if there's already an active session that is not expired
+        if (userInfo.Conversation != null && !userInfo.Conversation.IsExpired &&
+            userInfo.Conversation.State != ConversationState.Idle &&
+            userInfo.Conversation.State != ConversationState.AwaitingMealDescription)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ Ya tienes una sesión activa. Usa /cancel para cancelarla primero, o usa /save para guardar los cambios pendientes.",
+                null, ct);
+            return;
+        }
+
+        await _telegramService.SendMessageAsync(chatId, "📷 Procesando tu foto...", null, ct);
+
+        try
+        {
+            // Get the largest photo (last in array)
+            var largestPhoto = photos.OrderByDescending(p => p.FileSize ?? 0).First();
+            
+            // Get file info from Telegram
+            var fileResponse = await _telegramClient.GetFileAsync(
+                new GetFileRequest { FileId = largestPhoto.FileId }, ct);
+
+            if (fileResponse?.Ok != true || string.IsNullOrEmpty(fileResponse.Result?.FilePath))
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "❌ No pude obtener la foto. Por favor, intenta enviarla de nuevo.",
+                    null, ct);
+                return;
+            }
+
+            // Download the file
+            var imageBytes = await _telegramClient.DownloadFileAsync(fileResponse.Result.FilePath, ct);
+
+            // Perform OCR
+            var extractedText = await _azureVisionService.ExtractTextFromImageAsync(imageBytes, ct);
+
+            if (string.IsNullOrWhiteSpace(extractedText))
+            {
+                await _telegramService.SendMessageAsync(chatId,
+                    "❌ No pude leer texto en la imagen. Asegúrate de que el texto sea legible o envía un mensaje de texto describiendo tu comida.",
+                    null, ct);
+                return;
+            }
+
+            _logger.LogInformation("[OCR] Extracted text from photo for chatId {ChatId}: {Text}", chatId, extractedText);
+
+            // Initialize or update conversation session
+            if (userInfo.Conversation == null || userInfo.Conversation.IsExpired || 
+                userInfo.Conversation.State == ConversationState.Idle)
+            {
+                userInfo.Conversation = new ConversationSession
+                {
+                    State = ConversationState.AwaitingOCRCorrection,
+                    StartedAt = DateTime.UtcNow,
+                    LastActivityAt = DateTime.UtcNow,
+                    MessageHistory = new List<ConversationMessage>()
+                };
+            }
+            else
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingOCRCorrection;
+                userInfo.Conversation.Touch();
+            }
+
+            // Store OCR text for later use with corrections
+            userInfo.Conversation.OcrExtractedText = extractedText;
+
+            // Show extracted text and ask for corrections
+            await _telegramService.SendMessageAsync(chatId,
+                $"📝 <b>Texto detectado:</b>\n<i>{extractedText}</i>\n\n" +
+                "✏️ Si hay algún error, escribe las correcciones.\n" +
+                "✅ Si todo está correcto, usa /continue para continuar.",
+                "HTML", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing photo for chatId {ChatId}", chatId);
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Ocurrió un error al procesar la imagen. Por favor, intenta de nuevo o envía un mensaje de texto.",
+                null, ct);
+        }
     }
 
     private async Task HandleStartCommandAsync(string chatId, CancellationToken ct)
@@ -201,6 +326,124 @@ public class CronometerPollingHostedService : BackgroundService
             null, ct);
     }
 
+    private async Task HandleContinueCommandAsync(string chatId, CancellationToken ct)
+    {
+        if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo?.Conversation == null)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "No hay una sesión activa. Usa /start para iniciar.", null, ct);
+            return;
+        }
+
+        if (userInfo.Conversation.State != ConversationState.AwaitingOCRCorrection)
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "⚠️ Este comando solo se puede usar después de enviar una foto para confirmar el texto detectado.",
+                null, ct);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(userInfo.Conversation.OcrExtractedText))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ No hay texto OCR guardado. Por favor, envía una foto nuevamente.",
+                null, ct);
+            userInfo.Conversation.State = ConversationState.Idle;
+            return;
+        }
+
+        // Process OCR text without corrections
+        await ProcessOCRTextAsync(chatId, userInfo, userInfo.Conversation.OcrExtractedText, null, ct);
+    }
+
+    private async Task HandleOCRCorrectionAsync(string chatId, CronometerUserInfo userInfo, string correctionText, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(userInfo.Conversation?.OcrExtractedText))
+        {
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ No hay texto OCR guardado. Por favor, envía una foto nuevamente.",
+                null, ct);
+            return;
+        }
+
+        // Process OCR text with user corrections
+        await ProcessOCRTextAsync(chatId, userInfo, userInfo.Conversation.OcrExtractedText, correctionText, ct);
+    }
+
+    private async Task ProcessOCRTextAsync(string chatId, CronometerUserInfo userInfo, string ocrText, string? corrections, CancellationToken ct)
+    {
+        userInfo.Conversation!.State = ConversationState.Processing;
+        await _telegramService.SendMessageAsync(chatId, "⏳ Procesando...", null, ct);
+
+        try
+        {
+            // Build description with corrections if provided
+            string fullDescription;
+            if (!string.IsNullOrWhiteSpace(corrections))
+            {
+                fullDescription = $"{ocrText}\n\nCORRECCIONES DEL USUARIO: {corrections}";
+                _logger.LogInformation("[OCR] Processing with corrections for chatId {ChatId}: {Corrections}", chatId, corrections);
+            }
+            else
+            {
+                fullDescription = ocrText;
+            }
+
+            // Add to conversation history
+            userInfo.Conversation.OriginalDescription = fullDescription;
+            userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+            {
+                Role = "user",
+                Content = fullDescription,
+                Timestamp = DateTime.UtcNow
+            });
+
+            // Process as meal description
+            var result = await ProcessMealDescriptionAsync(fullDescription, ct);
+
+            if (!string.IsNullOrEmpty(result.ErrorMessage))
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingMealDescription;
+                await _telegramService.SendMessageAsync(chatId,
+                    $"❌ {result.ErrorMessage}\n\nPor favor, intenta describir tu comida nuevamente.",
+                    null, ct);
+                return;
+            }
+
+            if (result.NeedsClarification && result.Clarifications.Count > 0)
+            {
+                userInfo.Conversation.State = ConversationState.AwaitingClarification;
+                userInfo.Conversation.PendingClarifications = result.Clarifications;
+                userInfo.Conversation.PendingMealRequest = result.MealRequest;
+
+                var clarificationMessage = FormatClarificationQuestions(result.Clarifications);
+
+                userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                {
+                    Role = "assistant",
+                    Content = clarificationMessage,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                await _telegramService.SendMessageAsync(chatId,
+                    "🤔 Necesito un poco más de información:\n\n" + clarificationMessage,
+                    "HTML", ct);
+                return;
+            }
+
+            // No clarification needed, try to log the meal
+            await AttemptMealLoggingAsync(chatId, userInfo, result.MealRequest!, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing OCR text for chatId {ChatId}", chatId);
+            userInfo.Conversation.State = ConversationState.AwaitingOCRCorrection;
+            await _telegramService.SendMessageAsync(chatId,
+                "❌ Ocurrió un error al procesar. Por favor, intenta de nuevo.",
+                null, ct);
+        }
+    }
+
     private async Task HandleConversationMessageAsync(string chatId, string text, CancellationToken ct)
     {
         if (!_userSessions.TryGetValue(chatId, out var userInfo) || userInfo == null)
@@ -231,6 +474,10 @@ public class CronometerPollingHostedService : BackgroundService
 
             case ConversationState.AwaitingClarification:
                 await HandleClarificationResponseAsync(chatId, userInfo, text, ct);
+                break;
+
+            case ConversationState.AwaitingOCRCorrection:
+                await HandleOCRCorrectionAsync(chatId, userInfo, text, ct);
                 break;
 
             case ConversationState.AwaitingConfirmation:

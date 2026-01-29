@@ -42,6 +42,11 @@ builder.Services.AddHttpClient<OpenAIHttpClient>((sp, client) =>
     client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
 });
 
+// Azure Vision options + service registration
+builder.Services.Configure<CronometerLogMealApi.Clients.AzureVisionClient.AzureVisionClientOptions>(
+    builder.Configuration.GetSection("AzureVision"));
+builder.Services.AddSingleton<CronometerLogMealApi.Clients.AzureVisionClient.AzureVisionService>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

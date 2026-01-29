@@ -46,6 +46,11 @@ public class ConversationSession
     public List<ValidatedMealItem> ValidatedFoods { get; set; } = new();
 
     /// <summary>
+    /// Text extracted from OCR (stored for combining with user corrections).
+    /// </summary>
+    public string? OcrExtractedText { get; set; }
+
+    /// <summary>
     /// Session timeout duration (default: 10 minutes).
     /// </summary>
     public static readonly TimeSpan SessionTimeout = TimeSpan.FromMinutes(10);
@@ -83,6 +88,11 @@ public enum ConversationState
     /// Waiting for user response to clarification questions.
     /// </summary>
     AwaitingClarification,
+
+    /// <summary>
+    /// Waiting for user to confirm or correct OCR text.
+    /// </summary>
+    AwaitingOCRCorrection,
 
     /// <summary>
     /// Currently processing the meal request.

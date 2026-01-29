@@ -16,6 +16,17 @@ public class TelegramMessage
     [JsonPropertyName("chat")] public TelegramChat? Chat { get; set; }
     [JsonPropertyName("date")] public long? Date { get; set; }
     [JsonPropertyName("text")] public string? Text { get; set; }
+    [JsonPropertyName("photo")] public List<TelegramPhotoSize>? Photo { get; set; }
+    [JsonPropertyName("caption")] public string? Caption { get; set; }
+}
+
+public class TelegramPhotoSize
+{
+    [JsonPropertyName("file_id")] public string FileId { get; set; } = string.Empty;
+    [JsonPropertyName("file_unique_id")] public string FileUniqueId { get; set; } = string.Empty;
+    [JsonPropertyName("width")] public int Width { get; set; }
+    [JsonPropertyName("height")] public int Height { get; set; }
+    [JsonPropertyName("file_size")] public int? FileSize { get; set; }
 }
 
 public class TelegramChat
