@@ -99,7 +99,19 @@ public static class GeminiPrompts
         mililitros, ml -> "ml"
         cabeza de ajo -> "clove"
 
-        name (string): The name of the food in English with the first letter capitalized and the rest in lowercase.
+        name (string): IMPORTANT RULES FOR FOOD NAMES:
+        1. If the food name looks like a BRAND NAME or CUSTOM FOOD (e.g., "Emmanuel, Queso Mozzarella", "Nestle Cereal", "PAN Cachapas"), 
+           PRESERVE IT EXACTLY AS WRITTEN by the user, including commas, capitalization, and any brand identifiers.
+        2. For generic foods (e.g., "arroz", "pollo", "huevos"), translate to English with first letter capitalized.
+        3. When in doubt, PRESERVE the original name - it's better to keep the user's exact wording.
+        
+        Examples:
+        - "Emmanuel, Queso Mozzarella" → "Emmanuel, Queso Mozzarella" (brand/custom - preserve)
+        - "queso mozzarella" → "Mozzarella cheese" (generic - translate)
+        - "PAN Cachapas" → "PAN Cachapas" (brand - preserve)
+        - "cachapas" → "Cachapas" (generic Venezuelan food - keep original, capitalize)
+        - "arroz" → "Rice" (generic - translate)
+        - "Gatorade" → "Gatorade" (brand - preserve)
 
         Error Handling:
         If no food information can be extracted from the input message, the output must be a JSON object with a single error key:

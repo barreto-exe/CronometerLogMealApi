@@ -118,11 +118,24 @@ public class CronometerService
             .Foods?
             .FirstOrDefault();
 
-            var measure = GetSimilarMeasureId(food?.Measures, itemRequest.Unit);
+            var (measure, isRawGrams) = GetSimilarMeasureId(food?.Measures, itemRequest.Unit);
 
             itemToLogInCronometer.FoodId = foodId;
             itemToLogInCronometer.MeasureId = measure.Id;
-            itemToLogInCronometer.Grams = measure.Value * itemRequest.Quantity;
+            
+            // If isRawGrams is true, the user specified grams but the food doesn't have a "g" measure
+            // In this case, we need to calculate the correct gram amount
+            // The quantity represents raw grams, so we just use it directly as Grams
+            if (isRawGrams)
+            {
+                // The user wants X grams, so we set Grams = X (the quantity they specified)
+                itemToLogInCronometer.Grams = itemRequest.Quantity;
+            }
+            else
+            {
+                // Normal case: quantity * measure value = total grams
+                itemToLogInCronometer.Grams = measure.Value * itemRequest.Quantity;
+            }
 
             result.Servings.Add(itemToLogInCronometer);
         }
@@ -132,66 +145,196 @@ public class CronometerService
 
     private async Task<long> GetFoodId(string query, AuthPayload auth, CancellationToken cancellationToken)
     {
-        var allResults = new List<Food>();
+        if (string.IsNullOrWhiteSpace(query))
+            return 0;
 
-        var httpRequest = new FindFoodRequest()
+        logger.LogInformation("🔍 Starting food search for: '{Query}'", query);
+
+        // Normalize the query for better matching
+        var normalizedQuery = NormalizeSearchQuery(query);
+        
+        // Define search tabs with their priority weights (higher = better)
+        // CUSTOM and FAVOURITES get much higher priority since they're user-specific
+        var tabsWithPriority = new (string Tab, double PriorityWeight)[]
         {
-            Query = query,
-            Tab = "CUSTOM", //CUSTOM | COMMON_FOODS | SUPPLEMENTS | FAVOURITES | ALL
-            Auth = auth,
+            ("CUSTOM", 3.0),       // User's custom foods - HIGHEST priority
+            ("FAVOURITES", 2.5),   // User's favorites - very high priority  
+            ("COMMON_FOODS", 1.0), // Common foods - normal priority
+            ("SUPPLEMENTS", 0.5),  // Supplements - lower priority
+            ("ALL", 0.4)           // Fallback - lowest priority
         };
-        var customResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
-        if (customResult != null)
+
+        // Execute all searches in parallel for better performance
+        var searchTasks = tabsWithPriority.Select(async t =>
         {
-            allResults.Add(customResult);
-        }
+            var request = new FindFoodRequest
+            {
+                Query = query,
+                Tab = t.Tab,
+                Auth = auth
+            };
 
-        httpRequest.Tab = "FAVOURITES";
-        var favouriteResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
-        if (favouriteResult != null)
-        {
-            allResults.Add(favouriteResult);
-        }
+            try
+            {
+                var response = await cronometerHttpClient.FindFoodAsync(request, cancellationToken);
+                // Take top 5 results from each tab for better matching
+                var foods = response.Foods?.Take(5).ToList() ?? new List<Food>();
+                
+                logger.LogInformation("  📂 Tab {Tab}: Found {Count} results", t.Tab, foods.Count);
+                foreach (var food in foods.Take(3))
+                {
+                    logger.LogInformation("    - '{FoodName}' (ID: {FoodId})", food.Name, food.Id);
+                }
+                
+                return (Tab: t.Tab, Priority: t.PriorityWeight, Foods: foods);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to search in tab {Tab}", t.Tab);
+                return (Tab: t.Tab, Priority: t.PriorityWeight, Foods: new List<Food>());
+            }
+        });
 
-        httpRequest.Tab = "COMMON_FOODS";
-        var commonResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
-        if (commonResult != null)
-        {
-            allResults.Add(commonResult);
-        }
+        var searchResults = await Task.WhenAll(searchTasks);
 
-        httpRequest.Tab = "SUPPLEMENTS";
-        var supplementResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
-        if (supplementResult != null)
-        {
-            allResults.Add(supplementResult);
-        }
-
-        var dice = new SorensenDice();
-
-        var bestMatch = allResults
-            .Select(food => new
+        // Flatten all results with their source priority
+        var allCandidates = searchResults
+            .SelectMany(r => r.Foods.Select(food => new
             {
                 Food = food,
-                Similarity = dice.Similarity(food.Name, query)
+                SourceTab = r.Tab,
+                SourcePriority = r.Priority
+            }))
+            .ToList();
+
+        if (!allCandidates.Any())
+        {
+            logger.LogWarning("❌ No food found for query: {Query}", query);
+            return 0;
+        }
+
+        // Calculate composite score for each candidate
+        var dice = new SorensenDice();
+        var scoredCandidates = allCandidates
+            .Select(c =>
+            {
+                var normalizedFoodName = NormalizeSearchQuery(c.Food.Name);
+                
+                // Calculate similarity score (0-1)
+                var similarityScore = dice.Similarity(normalizedFoodName, normalizedQuery);
+                
+                // Also calculate similarity with original (non-normalized) names for exact matches
+                var originalSimilarity = dice.Similarity(c.Food.Name.ToLowerInvariant(), query.ToLowerInvariant());
+                
+                // Use the better of the two similarity scores
+                var bestSimilarity = Math.Max(similarityScore, originalSimilarity);
+                
+                // Bonus for exact match (case-insensitive) - HUGE bonus
+                var exactMatchBonus = string.Equals(c.Food.Name, query, StringComparison.OrdinalIgnoreCase) 
+                    ? 10.0 : 0.0;
+                
+                // Bonus for exact match after normalization
+                var normalizedExactBonus = string.Equals(normalizedFoodName, normalizedQuery, StringComparison.OrdinalIgnoreCase) 
+                    ? 5.0 : 0.0;
+                
+                // Bonus for starts-with match (original query)
+                var startsWithBonus = c.Food.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase) 
+                    ? 2.0 : 0.0;
+                
+                // Bonus for contains match (original query)
+                var containsBonus = c.Food.Name.Contains(query, StringComparison.OrdinalIgnoreCase) 
+                    ? 1.0 : 0.0;
+
+                // Composite score: (similarity * priority) + all bonuses
+                var compositeScore = (bestSimilarity * c.SourcePriority) + exactMatchBonus + normalizedExactBonus + startsWithBonus + containsBonus;
+
+                return new
+                {
+                    c.Food,
+                    c.SourceTab,
+                    c.SourcePriority,
+                    SimilarityScore = bestSimilarity,
+                    CompositeScore = compositeScore,
+                    ExactMatchBonus = exactMatchBonus,
+                    NormalizedExactBonus = normalizedExactBonus,
+                    StartsWithBonus = startsWithBonus,
+                    ContainsBonus = containsBonus
+                };
             })
-            .OrderByDescending(x => x.Similarity)
-            .FirstOrDefault();
+            .OrderByDescending(x => x.CompositeScore)
+            .ThenByDescending(x => x.SimilarityScore)
+            .ToList();
 
-        if (bestMatch != null && bestMatch.Similarity > 0.3) // threshold to avoid bad matches
+        // Log top 5 candidates for debugging
+        logger.LogInformation("📊 Top candidates for '{Query}':", query);
+        foreach (var candidate in scoredCandidates.Take(5))
         {
-            return bestMatch.Food.Id;
+            logger.LogInformation(
+                "  [{Tab}] '{Name}' | Score: {Score:F2} = (sim:{Sim:F2} × pri:{Pri:F1}) + exact:{Exact:F1} + normExact:{NormExact:F1} + starts:{Starts:F1} + contains:{Contains:F1}",
+                candidate.SourceTab,
+                candidate.Food.Name,
+                candidate.CompositeScore,
+                candidate.SimilarityScore,
+                candidate.SourcePriority,
+                candidate.ExactMatchBonus,
+                candidate.NormalizedExactBonus,
+                candidate.StartsWithBonus,
+                candidate.ContainsBonus);
         }
 
-        httpRequest.Tab = "ALL";
-        var allResult = (await cronometerHttpClient.FindFoodAsync(httpRequest, cancellationToken)).Foods?.FirstOrDefault();
+        var bestMatch = scoredCandidates.FirstOrDefault();
 
-        if (allResult != null)
+        if (bestMatch == null)
         {
-            return allResult.Id;
+            return 0;
         }
 
-        return 0;
+        // Log the selection
+        logger.LogInformation(
+            "✅ Selected: '{FoodName}' (ID: {FoodId}) from {Tab} with score {Score:F3}",
+            bestMatch.Food.Name, bestMatch.Food.Id, bestMatch.SourceTab, bestMatch.CompositeScore);
+
+        // Return best match if score is acceptable
+        if (bestMatch.CompositeScore < 0.2)
+        {
+            logger.LogWarning("⚠️ Best match for '{Query}' has too low score ({Score:F3}), returning no match", 
+                query, bestMatch.CompositeScore);
+            return 0;
+        }
+
+        return bestMatch.Food.Id;
+    }
+
+    /// <summary>
+    /// Normalizes a search query or food name for better matching.
+    /// Removes common noise words, extra spaces, and standardizes format.
+    /// </summary>
+    private static string NormalizeSearchQuery(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return string.Empty;
+
+        // Convert to lowercase and trim
+        var normalized = input.Trim().ToLowerInvariant();
+
+        // Remove punctuation that might interfere with matching
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"[,\.\-_]", " ");
+
+        // Remove common noise words that don't help with matching
+        var noiseWords = new[] { "de", "con", "the", "a", "an", "and", "y", "or", "o", "en", "in" };
+        foreach (var word in noiseWords)
+        {
+            normalized = System.Text.RegularExpressions.Regex.Replace(
+                normalized, 
+                $@"\b{word}\b", 
+                " ", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        // Remove extra whitespace
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", " ").Trim();
+
+        return normalized;
     }
 
     /// <summary>
@@ -230,7 +373,7 @@ public class CronometerService
                 continue;
             }
 
-            var measure = GetSimilarMeasureId(food.Measures, itemRequest.Unit);
+            var (measure, isRawGrams) = GetSimilarMeasureId(food.Measures, itemRequest.Unit);
 
             validatedItems.Add(new ValidatedMealItem
             {
@@ -238,16 +381,28 @@ public class CronometerService
                 FoodName = food.Name,
                 FoodId = food.Id,
                 Quantity = itemRequest.Quantity,
-                MeasureName = measure.Name,
+                MeasureName = isRawGrams ? "g" : measure.Name,
                 MeasureId = measure.Id,
-                MeasureGrams = measure.Value
+                MeasureGrams = measure.Value,
+                IsRawGrams = isRawGrams
             });
         }
 
         return (validatedItems, notFoundItems);
     }
 
-    private static Measure GetSimilarMeasureId(IEnumerable<Measure>? measures, string measureName)
+    /// <summary>
+    /// Finds the best matching measure for the given unit name.
+    /// Returns a tuple with the measure and whether the quantity needs to be treated as raw grams.
+    /// </summary>
+    /// <param name="measures">Available measures for the food</param>
+    /// <param name="measureName">The unit name from user input (e.g., "grams", "g", "cup", "large")</param>
+    /// <returns>
+    /// A tuple containing:
+    /// - Measure: The matched measure (or a gram-based fallback)
+    /// - IsRawGrams: If true, the quantity should be divided by MeasureGrams to get the correct serving count
+    /// </returns>
+    private static (Measure Measure, bool IsRawGrams) GetSimilarMeasureId(IEnumerable<Measure>? measures, string measureName)
     {
         var defaultMeasure = new Measure()
         {
@@ -258,29 +413,73 @@ public class CronometerService
 
         if (measures == null || !measures.Any() || string.IsNullOrWhiteSpace(measureName))
         {
-            return defaultMeasure;
+            return (defaultMeasure, false);
         }
 
+        // Normalize the measure name for comparison
+        var normalizedName = measureName.Trim().ToLowerInvariant();
+        var isGramRequest = normalizedName == "grams" || normalizedName == "gram" || 
+                           normalizedName == "gms" || normalizedName == "gm" || normalizedName == "g";
+
+        // 1. Try exact match first
         var measure = measures.FirstOrDefault(m => string.Equals(m.Name, measureName, StringComparison.OrdinalIgnoreCase));
         if (measure != null)
         {
-            return measure;
-        }
-        measure = measures.FirstOrDefault(m => m.Name.Contains(measureName, StringComparison.OrdinalIgnoreCase));
-        if (measure != null)
-        {
-            return measure;
+            return (measure, false);
         }
 
-        if (measureName == "grams" || measureName == "gram" || measureName == "gms" || measureName == "gm")
+        // 2. For gram requests, prioritize finding a pure "g" measure
+        if (isGramRequest)
         {
             measure = measures.FirstOrDefault(m => m.Name.Equals("g", StringComparison.OrdinalIgnoreCase));
             if (measure != null)
             {
-                return measure;
+                return (measure, false);
+            }
+
+            // 3. If no pure "g" measure, find any gram-based measure and flag for raw gram conversion
+            // This handles cases like "100g", "50g", etc.
+            measure = measures.FirstOrDefault(m => 
+                System.Text.RegularExpressions.Regex.IsMatch(m.Name, @"^\d+\s*g$", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+            if (measure != null)
+            {
+                // Return this measure but flag that we need to convert the quantity
+                // The caller should divide the requested grams by the measure's gram value
+                return (measure, true);
+            }
+
+            // 4. Look for any measure containing "g" that represents grams
+            measure = measures.FirstOrDefault(m => 
+                m.Name.EndsWith("g", StringComparison.OrdinalIgnoreCase) && 
+                !m.Name.Contains("serving", StringComparison.OrdinalIgnoreCase));
+            if (measure != null)
+            {
+                return (measure, true);
+            }
+
+            // 5. If still no gram measure found, use the first available measure and convert
+            // This is a last resort - we'll use whatever measure exists and calculate based on its gram value
+            var firstMeasure = measures.FirstOrDefault();
+            if (firstMeasure != null && firstMeasure.Value > 0)
+            {
+                return (firstMeasure, true);
             }
         }
 
-        return defaultMeasure;
+        // 3. Try contains match for non-gram requests
+        measure = measures.FirstOrDefault(m => m.Name.Contains(measureName, StringComparison.OrdinalIgnoreCase));
+        if (measure != null)
+        {
+            return (measure, false);
+        }
+
+        // 4. Try if the measure name contains the requested name
+        measure = measures.FirstOrDefault(m => measureName.Contains(m.Name, StringComparison.OrdinalIgnoreCase));
+        if (measure != null)
+        {
+            return (measure, false);
+        }
+
+        return (defaultMeasure, false);
     }
 }

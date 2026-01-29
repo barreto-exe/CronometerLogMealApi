@@ -744,6 +744,19 @@ public class CronometerPollingHostedService : BackgroundService
 
             foreach (var item in userInfo.Conversation.ValidatedFoods)
             {
+                // Calculate the correct grams value based on whether it's raw grams or measure-based
+                double grams;
+                if (item.IsRawGrams)
+                {
+                    // User specified raw grams directly - use quantity as the gram value
+                    grams = item.Quantity;
+                }
+                else
+                {
+                    // Normal measure-based calculation
+                    grams = item.Quantity * item.MeasureGrams;
+                }
+
                 servingPayload.Servings.Add(new ServingPayload
                 {
                     Order = order,
@@ -753,7 +766,7 @@ public class CronometerPollingHostedService : BackgroundService
                     Type = "Serving",
                     FoodId = item.FoodId,
                     MeasureId = item.MeasureId,
-                    Grams = item.Quantity * item.MeasureGrams
+                    Grams = grams
                 });
             }
 
@@ -824,9 +837,9 @@ public class CronometerPollingHostedService : BackgroundService
         userInfo.Conversation.ValidatedFoods = validatedItems;
         userInfo.Conversation.State = ConversationState.AwaitingConfirmation;
 
-        // Build summary message
+        // Build summary message - use DisplayQuantity for proper formatting
         var itemsSummary = string.Join("\n", validatedItems.Select(i => 
-            $"• {i.Quantity} {i.MeasureName} de <b>{i.FoodName}</b>"));
+            $"• {i.DisplayQuantity} de <b>{i.FoodName}</b>"));
 
         var msg = $"💾 Estás a punto de registrar:\n\n" +
                   $"<b>Hora:</b> {request.Date:h:mm tt}\n" +
