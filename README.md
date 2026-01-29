@@ -39,7 +39,7 @@ A .NET 8 Web API and Background Service that acts as a bridge between **Telegram
 
 Create an `appsettings.json` file in the root of the project (or use User Secrets) with the following structure.
 
-> **Note**: The project currently uses an `OpenAIHttpClient` in the hosted service, so you must configure the `OpenAI` section, even if you are pointing it to a different provider like Gemini (via an OpenAI-compatible endpoint) or LocalAI.
+> **Note**: The project currently uses an `OpenAIHttpClient` in the hosted service, so you must configure the `OpenAI` section. It also supports **Azure Vision** for OCR capabilities and **Gemini** for extended AI features (including those requiring cookies).
 
 ```json
 {
@@ -52,22 +52,31 @@ Create an `appsettings.json` file in the root of the project (or use User Secret
   "Telegram": {
     "BotToken": "YOUR_TELEGRAM_BOT_TOKEN"
   },
-  "OpenAI": {
-    "ApiKey": "YOUR_API_KEY",
-    "Model": "gpt-4o-mini", 
-    "BaseUrl": "https://api.openai.com/v1" 
-  },
   "Gemini": {
     "ApiKey": "YOUR_GEMINI_API_KEY",
-    "Model": "gemini-2.5-pro",
-    "BaseUrl": "https://generativelanguage.googleapis.com/v1beta"
+    "Model": "gemini-2.0-flash",
+    "VisionModel": "gemini-2.0-flash",
+    "BaseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "Cookies": {
+      "__Secure-1PSID": "YOUR_SECURE_1PSID",
+      "__Secure-1PSIDTS": "YOUR_SECURE_1PSIDTS"
+    }
+  },
+  "OpenAI": {
+    "ApiKey": "YOUR_OPENAI_API_KEY",
+    "Model": "gpt-4o-mini"
+  },
+  "AzureVision": {
+    "Endpoint": "YOUR_AZURE_VISION_ENDPOINT",
+    "ApiKey": "YOUR_AZURE_VISION_API_KEY"
   }
 }
 ```
 
 *   **Telegram**: Get your bot token from @BotFather.
-*   **OpenAI**: Used by the main bot logic to parse meals. You can point `BaseUrl` to other compatible services.
-*   **Gemini**: Used by the `GeminiController` for specific testing endpoints.
+*   **OpenAI**: Used by the main bot logic to parse meals.
+*   **Gemini**: Used for specific AI tasks. Note that some models/features might require browser cookies (`__Secure-1PSID` and `__Secure-1PSIDTS`) to bypass certain restrictions or access specific capabilities.
+*   **AzureVision**: (Optional) Used for OCR (Optical Character Recognition) to extract text from images sent to the bot.
 
 ## Running the Project
 
