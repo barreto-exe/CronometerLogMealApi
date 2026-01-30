@@ -469,7 +469,7 @@ public class CronometerPollingHostedService : BackgroundService
             if (result.NeedsClarification && result.Clarifications.Count > 0)
             {
                 // Enrich clarifications with original terms from the description
-                EnrichClarificationsWithOriginalTerms(result.Clarifications, fullDescription);
+                await EnrichClarificationsWithOriginalTermsAsync(result.Clarifications, fullDescription, ct);
                 
                 userInfo.Conversation.State = ConversationState.AwaitingClarification;
                 userInfo.Conversation.PendingClarifications = result.Clarifications;
@@ -638,7 +638,7 @@ public class CronometerPollingHostedService : BackgroundService
             if (result.NeedsClarification && result.Clarifications.Count > 0)
             {
                 // Enrich clarifications with original terms from user input
-                EnrichClarificationsWithOriginalTerms(result.Clarifications, text);
+                await EnrichClarificationsWithOriginalTermsAsync(result.Clarifications, text, ct);
                 
                 // Log the enriched clarifications for debugging
                 foreach (var c in result.Clarifications)
@@ -709,14 +709,14 @@ public class CronometerPollingHostedService : BackgroundService
                     }
                     // If still needs clarification, fall through to ask
                     // Re-enrich the clarifications with original terms
-                    EnrichClarificationsWithOriginalTerms(retryResult.Clarifications, text);
+                    await EnrichClarificationsWithOriginalTermsAsync(retryResult.Clarifications, text, ct);
                     remainingClarifications = retryResult.Clarifications;
                 }
 
                 if (remainingClarifications.Count > 0)
                 {
                     // Re-enrich remaining clarifications to ensure OriginalTerm is set
-                    EnrichClarificationsWithOriginalTerms(remainingClarifications, text);
+                    await EnrichClarificationsWithOriginalTermsAsync(remainingClarifications, text, ct);
                     
                     userInfo.Conversation.State = ConversationState.AwaitingClarification;
                     userInfo.Conversation.PendingClarifications = remainingClarifications;
@@ -826,7 +826,7 @@ public class CronometerPollingHostedService : BackgroundService
             {
                 // Still needs more clarification - enrich with original terms from conversation history
                 var originalInput = GetOriginalMealDescriptionFromHistory(userInfo.Conversation.MessageHistory);
-                EnrichClarificationsWithOriginalTerms(result.Clarifications, originalInput);
+                await EnrichClarificationsWithOriginalTermsAsync(result.Clarifications, originalInput, ct);
                 
                 userInfo.Conversation.State = ConversationState.AwaitingClarification;
                 userInfo.Conversation.PendingClarifications = result.Clarifications;
@@ -908,7 +908,7 @@ public class CronometerPollingHostedService : BackgroundService
             {
                 // Enrich clarifications with original terms from conversation history
                 var originalInput = GetOriginalMealDescriptionFromHistory(userInfo.Conversation.MessageHistory);
-                EnrichClarificationsWithOriginalTerms(result.Clarifications, originalInput);
+                await EnrichClarificationsWithOriginalTermsAsync(result.Clarifications, originalInput, ct);
                 
                 userInfo.Conversation.State = ConversationState.AwaitingClarification;
                 userInfo.Conversation.PendingClarifications = result.Clarifications;
@@ -2050,7 +2050,7 @@ public class CronometerPollingHostedService : BackgroundService
     /// Enriches clarification items with the original food terms from user input.
     /// This maps LLM-translated names (e.g., "Egg") back to original terms (e.g., "huevos").
     /// </summary>
-    private static void EnrichClarificationsWithOriginalTerms(List<ClarificationItem> clarifications, string originalInput)
+    private async Task EnrichClarificationsWithOriginalTermsAsync(List<ClarificationItem> clarifications, string originalInput, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(originalInput))
             return;
@@ -2095,13 +2095,23 @@ public class CronometerPollingHostedService : BackgroundService
             { "avena", new[] { "oatmeal", "oats" } },
             { "yogur", new[] { "yogurt" } },
             { "yogurt", new[] { "yogurt" } },
+            { "fideos", new[] { "noodles", "noodle", "pasta" } },
+            { "pasta", new[] { "pasta", "noodles", "spaghetti" } },
+            { "espagueti", new[] { "spaghetti", "pasta" } },
+            { "aguacate", new[] { "avocado" } },
+            { "palta", new[] { "avocado" } },
+            { "frijoles", new[] { "beans", "black beans" } },
+            { "caraotas", new[] { "beans", "black beans" } },
+            { "lentejas", new[] { "lentils" } },
         };
+
+        var unresolvedClarifications = new List<ClarificationItem>();
 
         foreach (var clarification in clarifications)
         {
             var itemNameLower = clarification.ItemName.ToLowerInvariant();
             
-            // Strategy 1: Direct search in original input
+            // Strategy 1: Direct search using known translations dictionary
             foreach (var (spanish, englishVariants) in commonTranslations)
             {
                 if (englishVariants.Any(en => itemNameLower.Contains(en)) && 
@@ -2112,7 +2122,7 @@ public class CronometerPollingHostedService : BackgroundService
                 }
             }
 
-            // Strategy 2: If no translation found, try to find any word from itemName in input
+            // Strategy 2: If no translation found, try direct text matching
             if (string.IsNullOrEmpty(clarification.OriginalTerm))
             {
                 var inputWords = originalInput.Split(new[] { ' ', ',', '.', '!', '?', '\n', '\r' }, 
@@ -2124,18 +2134,124 @@ public class CronometerPollingHostedService : BackgroundService
                     if (word.Length < 3 || double.TryParse(word, out _))
                         continue;
                     
-                    // Check if this word might be the food term
                     var wordLower = word.ToLowerInvariant();
-                    if (commonTranslations.ContainsKey(wordLower) || 
-                        itemNameLower.Contains(wordLower) ||
-                        wordLower.Contains(itemNameLower.Split(' ').FirstOrDefault() ?? ""))
+                    
+                    // Check if this word in the input corresponds to this specific clarification's item
+                    if (commonTranslations.TryGetValue(wordLower, out var englishVariants))
+                    {
+                        if (englishVariants.Any(en => itemNameLower.Contains(en)))
+                        {
+                            clarification.OriginalTerm = word;
+                            break;
+                        }
+                    }
+                    else if (itemNameLower.Contains(wordLower) ||
+                             wordLower.Contains(itemNameLower.Split(' ').FirstOrDefault() ?? ""))
                     {
                         clarification.OriginalTerm = word;
                         break;
                     }
                 }
             }
+
+            // Track unresolved clarifications for Strategy 3
+            if (string.IsNullOrEmpty(clarification.OriginalTerm))
+            {
+                unresolvedClarifications.Add(clarification);
+            }
         }
+
+        // Strategy 3: Use LLM to find original terms for unresolved clarifications
+        if (unresolvedClarifications.Count > 0)
+        {
+            try
+            {
+                var mappings = await GetOriginalTermsFromLLMAsync(unresolvedClarifications, originalInput, ct);
+                foreach (var (clarification, originalTerm) in mappings)
+                {
+                    if (!string.IsNullOrWhiteSpace(originalTerm))
+                    {
+                        clarification.OriginalTerm = originalTerm;
+                        _logger.LogDebug("LLM resolved original term: '{ItemName}' -> '{OriginalTerm}'", 
+                            clarification.ItemName, originalTerm);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get original terms from LLM, using ItemName as fallback");
+                // Fallback: use ItemName as OriginalTerm
+                foreach (var clarification in unresolvedClarifications)
+                {
+                    if (string.IsNullOrEmpty(clarification.OriginalTerm))
+                    {
+                        clarification.OriginalTerm = clarification.ItemName;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Uses LLM to find the original Spanish terms from the user input that correspond to English food names.
+    /// </summary>
+    private async Task<List<(ClarificationItem Clarification, string OriginalTerm)>> GetOriginalTermsFromLLMAsync(
+        List<ClarificationItem> clarifications, 
+        string originalInput, 
+        CancellationToken ct)
+    {
+        var results = new List<(ClarificationItem, string)>();
+        
+        if (clarifications.Count == 0)
+            return results;
+
+        var itemNames = string.Join(", ", clarifications.Select(c => $"\"{c.ItemName}\""));
+        
+        var prompt = $@"Given this user input in Spanish: ""{originalInput}""
+
+Find the EXACT word(s) from the user input that correspond to these English food names: {itemNames}
+
+Return ONLY a JSON object mapping each English name to the original Spanish word from the input.
+The Spanish word MUST appear exactly in the user input.
+If you cannot find a match, use null.
+
+Example:
+Input: ""fideos con 4 huevos""
+English names: ""Noodles"", ""Egg""
+Output: {{""Noodles"": ""fideos"", ""Egg"": ""huevos""}}
+
+Return ONLY the JSON, no markdown or explanation.";
+
+        var response = await _openAIClient.GenerateTextAsync(prompt, ct);
+        var content = response?.Choices?.FirstOrDefault()?.Message?.Content;
+
+        if (string.IsNullOrWhiteSpace(content))
+            return results;
+
+        try
+        {
+            var cleanedJson = RemoveMarkdown(content);
+            var mappings = JsonSerializer.Deserialize<Dictionary<string, string?>>(cleanedJson, 
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (mappings != null)
+            {
+                foreach (var clarification in clarifications)
+                {
+                    if (mappings.TryGetValue(clarification.ItemName, out var originalTerm) && 
+                        !string.IsNullOrWhiteSpace(originalTerm))
+                    {
+                        results.Add((clarification, originalTerm));
+                    }
+                }
+            }
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse LLM response for original terms: {Response}", content);
+        }
+
+        return results;
     }
 
     /// <summary>
