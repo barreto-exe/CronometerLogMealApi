@@ -177,6 +177,13 @@ public static class GeminiPrompts
           ]
         }
 
+        IMPORTANT: When the user input includes "Clarification question:" and "User answered:" pairs, 
+        this means the user has already answered those questions. Use those answers directly:
+        - If egg size was answered as "grandes", use "large" as the unit
+        - If weight was answered as "100g", use that value
+        - DO NOT ask for the same information again if it was already answered
+        - Only ask for clarification if something NEW is still unclear
+
         TODAY'S DATE: @Now
         USER INPUT:
         @UserInput

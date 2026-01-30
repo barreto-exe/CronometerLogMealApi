@@ -1270,10 +1270,42 @@ public class CronometerPollingHostedService : BackgroundService
             return result;
         }
 
-        // Case 2: Multiple clarifications - try to parse numbered responses
+        // Case 2: Try newline separated responses first (most common for multiple clarifications)
+        // User often responds with:
+        // 1. grandes
+        // 2. 100g
+        var lines = response.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim())
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .ToList();
+
+        if (lines.Count >= pendingClarifications.Count)
+        {
+            // Try to parse each line, removing number prefix if present
+            for (int i = 0; i < pendingClarifications.Count && i < lines.Count; i++)
+            {
+                var line = lines[i];
+                // Remove numbered prefix like "1. ", "1) ", "1: "
+                var cleanedLine = System.Text.RegularExpressions.Regex.Replace(line, @"^\d+[\.\)\:]\s*", "").Trim();
+                if (!string.IsNullOrWhiteSpace(cleanedLine))
+                {
+                    result[pendingClarifications[i]] = cleanedLine;
+                    _logger.LogDebug("Parsed line response {Index}: '{Answer}'", i + 1, cleanedLine);
+                }
+            }
+            
+            if (result.Count == pendingClarifications.Count)
+                return result;
+            
+            // Reset if we didn't get all
+            result.Clear();
+        }
+
+        // Case 3: Try single-line numbered responses  
         // Format: "1. grande 2. 200g" or "1) grande 2) 200g" or "1: grande 2: 200g"
+        // Improved regex: capture everything until the next number-dot/paren/colon or end of string
         var numberedPattern = new System.Text.RegularExpressions.Regex(
-            @"(?:^|\s)(\d+)[\.\)\:]\s*([^0-9]+?)(?=(?:\s+\d+[\.\)\:])|$)", 
+            @"(\d+)[\.\)\:]\s*(.+?)(?=\s+\d+[\.\)\:]|$)", 
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         
         var matches = numberedPattern.Matches(response);
@@ -1298,7 +1330,7 @@ public class CronometerPollingHostedService : BackgroundService
                 return result;
         }
 
-        // Case 3: Try comma/semicolon/newline separated responses
+        // Case 4: Try comma/semicolon separated responses
         var separators = new[] { ',', ';', '\n' };
         var parts = response.Split(separators, StringSplitOptions.RemoveEmptyEntries)
             .Select(p => p.Trim())
@@ -1382,12 +1414,41 @@ public class CronometerPollingHostedService : BackgroundService
 
     private static string BuildConversationContext(List<ConversationMessage> history)
     {
-        // Build a comprehensive context from all messages
-        var userMessages = history
-            .Where(m => m.Role == "user")
-            .Select(m => m.Content);
-
-        return string.Join(". ", userMessages);
+        // Build a comprehensive context from all messages, including Q&A pairs
+        // This helps the LLM understand what clarifications were asked and answered
+        var sb = new System.Text.StringBuilder();
+        
+        bool isFirst = true;
+        for (int i = 0; i < history.Count; i++)
+        {
+            var msg = history[i];
+            
+            if (msg.Role == "user")
+            {
+                if (isFirst)
+                {
+                    // First user message is the meal description
+                    sb.Append($"Meal description: {msg.Content}");
+                    isFirst = false;
+                }
+                else
+                {
+                    // Check if previous message was assistant asking for clarification
+                    if (i > 0 && history[i - 1].Role == "assistant")
+                    {
+                        var question = history[i - 1].Content;
+                        sb.Append($"\nClarification question: {question}");
+                        sb.Append($"\nUser answered: {msg.Content}");
+                    }
+                    else
+                    {
+                        sb.Append($"\nAdditional info: {msg.Content}");
+                    }
+                }
+            }
+        }
+        
+        return sb.ToString();
     }
 
     /// <summary>
