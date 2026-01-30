@@ -63,8 +63,9 @@ Create an `appsettings.json` file in the root of the project (or use User Secret
     }
   },
   "OpenAI": {
-    "ApiKey": "YOUR_OPENAI_API_KEY",
-    "Model": "gpt-4o-mini"
+    "ApiKey": "YOUR_OPENAI_API_KEY_OR_GITHUB_PAT",
+    "Model": "gpt-4o",
+    "BaseUrl": "https://api.openai.com/v1/"
   },
   "AzureVision": {
     "Endpoint": "YOUR_AZURE_VISION_ENDPOINT",
@@ -78,10 +79,39 @@ Create an `appsettings.json` file in the root of the project (or use User Secret
 ```
 
 *   **Telegram**: Get your bot token from @BotFather.
-*   **OpenAI**: Used by the main bot logic to parse meals.
+*   **OpenAI**: Used by the main bot logic to parse meals. Supports multiple providers:
+    - **OpenAI Direct**: Use your OpenAI API key with `BaseUrl: "https://api.openai.com/v1/"`
+    - **GitHub Models** (free with Copilot): Use a GitHub PAT with `BaseUrl: "https://models.inference.ai.azure.com/"`
+    - **Azure OpenAI**: Use your Azure endpoint as BaseUrl
 *   **Gemini**: Used for specific AI tasks. Note that some models/features might require browser cookies (`__Secure-1PSID` and `__Secure-1PSIDTS`) to bypass certain restrictions or access specific capabilities.
 *   **AzureVision**: (Optional) Used for OCR (Optical Character Recognition) to extract text from images sent to the bot.
 *   **Firebase**: (Optional) Used for the memory system to remember user food aliases and preferences.
+
+### Using GitHub Models (Free with Copilot)
+
+If you have a GitHub Copilot subscription, you can use GitHub Models for free:
+
+1. **Create a GitHub Personal Access Token**:
+   - Go to https://github.com/settings/tokens?type=beta
+   - Click "Generate new token"
+   - Give it a name (e.g., "Cronometer Bot")
+   - Under Permissions, enable `Copilot` → `Read and write`
+   - Copy the token (starts with `github_pat_...`)
+
+2. **Configure in appsettings.json**:
+   ```json
+   "OpenAI": {
+     "ApiKey": "github_pat_your_token_here",
+     "Model": "gpt-4o",
+     "BaseUrl": "https://models.inference.ai.azure.com/"
+   }
+   ```
+
+3. **Available Models**:
+   - `gpt-4o` - GPT-4o (recommended)
+   - `gpt-4o-mini` - Faster and lighter
+   - `o1-preview` / `o1-mini` - Advanced reasoning
+   - `claude-3.5-sonnet` - Anthropic Claude
 
 ### Firebase Setup (Optional)
 

@@ -17,48 +17,54 @@ public class ClarificationPreference
     public string Id { get; set; } = string.Empty;
 
     /// <summary>
+    /// The user ID (Telegram chat ID).
+    /// </summary>
+    [FirestoreProperty("userId")]
+    public string UserId { get; set; } = string.Empty;
+
+    /// <summary>
     /// The original food term in the user's language (e.g., "huevos", not "eggs").
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("foodTerm")]
     public string FoodTerm { get; set; } = string.Empty;
 
     /// <summary>
     /// The type of clarification this preference answers.
     /// E.g., "MISSING_SIZE", "MISSING_WEIGHT", "AMBIGUOUS_UNIT"
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("clarificationType")]
     public string ClarificationType { get; set; } = string.Empty;
 
     /// <summary>
     /// The default answer/value for this clarification.
     /// E.g., "grande", "200g", "taza"
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("defaultAnswer")]
     public string DefaultAnswer { get; set; } = string.Empty;
 
     /// <summary>
     /// How many times this pattern has been observed.
     /// We only save as preference after 2+ occurrences.
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("occurrenceCount")]
     public int OccurrenceCount { get; set; } = 1;
 
     /// <summary>
     /// Whether this preference has been confirmed (count >= 2).
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("isConfirmed")]
     public bool IsConfirmed { get; set; } = false;
 
     /// <summary>
     /// When this preference was first created.
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("createdAt")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
     /// When this preference was last used.
     /// </summary>
-    [FirestoreProperty]
+    [FirestoreProperty("lastUsedAt")]
     public DateTime LastUsedAt { get; set; } = DateTime.UtcNow;
 }
 

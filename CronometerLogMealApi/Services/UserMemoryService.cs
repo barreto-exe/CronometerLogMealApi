@@ -709,6 +709,14 @@ public class UserMemoryService
         var pref = doc.ConvertTo<ClarificationPreference>();
         pref.Id = doc.Id;
 
+        // Don't use preferences with empty answers (legacy documents)
+        if (string.IsNullOrWhiteSpace(pref.DefaultAnswer))
+        {
+            _logger.LogWarning("Found preference with empty answer, ignoring: '{Term}' + {Type}",
+                pref.FoodTerm, pref.ClarificationType);
+            return null;
+        }
+
         _logger.LogInformation("Found clarification preference: '{Term}' + {Type} -> '{Answer}'",
             pref.FoodTerm, pref.ClarificationType, pref.DefaultAnswer);
 
@@ -728,6 +736,9 @@ public class UserMemoryService
         var normalizedTerm = NormalizeTerm(foodTerm);
         var normalizedAnswer = answer.Trim().ToLowerInvariant();
 
+        _logger.LogInformation("Recording pattern: userId={UserId}, term='{Term}', type='{Type}', answer='{Answer}'",
+            userId, normalizedTerm, clarificationType, normalizedAnswer);
+
         // Check if we already have a pending/confirmed preference for this pattern
         var query = _db.Collection(ClarificationPrefsCollection)
             .WhereEqualTo("userId", userId)
@@ -738,12 +749,19 @@ public class UserMemoryService
         var snapshot = await query.GetSnapshotAsync(ct);
         var existingDoc = snapshot.Documents.FirstOrDefault();
 
+        _logger.LogInformation("Existing document found: {Found}", existingDoc != null);
+
         if (existingDoc != null)
         {
             var existing = existingDoc.ConvertTo<ClarificationPreference>();
+            _logger.LogInformation("Existing preference: answer='{Answer}', count={Count}, confirmed={Confirmed}",
+                existing.DefaultAnswer, existing.OccurrenceCount, existing.IsConfirmed);
 
-            // Check if the answer is the same
-            if (existing.DefaultAnswer.Equals(normalizedAnswer, StringComparison.OrdinalIgnoreCase))
+            // If existing answer is empty (legacy document), treat as if same answer
+            var existingAnswerIsEmpty = string.IsNullOrWhiteSpace(existing.DefaultAnswer);
+            
+            // Check if the answer is the same (or existing is empty/legacy)
+            if (existingAnswerIsEmpty || existing.DefaultAnswer.Equals(normalizedAnswer, StringComparison.OrdinalIgnoreCase))
             {
                 // Same answer, increment count and potentially confirm
                 var newCount = existing.OccurrenceCount + 1;
@@ -751,6 +769,7 @@ public class UserMemoryService
 
                 await existingDoc.Reference.UpdateAsync(new Dictionary<string, object>
                 {
+                    ["defaultAnswer"] = normalizedAnswer, // Always update answer (fixes legacy docs)
                     ["occurrenceCount"] = newCount,
                     ["isConfirmed"] = isNowConfirmed,
                     ["lastUsedAt"] = DateTime.UtcNow

@@ -468,6 +468,9 @@ public class CronometerPollingHostedService : BackgroundService
 
             if (result.NeedsClarification && result.Clarifications.Count > 0)
             {
+                // Enrich clarifications with original terms from the description
+                EnrichClarificationsWithOriginalTerms(result.Clarifications, fullDescription);
+                
                 userInfo.Conversation.State = ConversationState.AwaitingClarification;
                 userInfo.Conversation.PendingClarifications = result.Clarifications;
                 userInfo.Conversation.PendingMealRequest = result.MealRequest;
@@ -636,6 +639,13 @@ public class CronometerPollingHostedService : BackgroundService
             {
                 // Enrich clarifications with original terms from user input
                 EnrichClarificationsWithOriginalTerms(result.Clarifications, text);
+                
+                // Log the enriched clarifications for debugging
+                foreach (var c in result.Clarifications)
+                {
+                    _logger.LogInformation("Clarification: ItemName='{ItemName}', OriginalTerm='{OriginalTerm}', Type={Type}",
+                        c.ItemName, c.OriginalTerm, c.Type);
+                }
 
                 // Check if we have saved preferences for any clarifications
                 var remainingClarifications = new List<ClarificationItem>();
@@ -648,6 +658,9 @@ public class CronometerPollingHostedService : BackgroundService
                         var termToCheck = !string.IsNullOrEmpty(clarification.OriginalTerm) 
                             ? clarification.OriginalTerm 
                             : clarification.ItemName;
+                        
+                        _logger.LogInformation("Checking clarification preference for term: '{Term}', type: '{Type}'",
+                            termToCheck, clarification.Type.ToString());
 
                         var preference = await _memoryService.FindClarificationPreferenceAsync(
                             chatId, termToCheck, clarification.Type.ToString(), ct);
@@ -695,11 +708,16 @@ public class CronometerPollingHostedService : BackgroundService
                         return;
                     }
                     // If still needs clarification, fall through to ask
+                    // Re-enrich the clarifications with original terms
+                    EnrichClarificationsWithOriginalTerms(retryResult.Clarifications, text);
                     remainingClarifications = retryResult.Clarifications;
                 }
 
                 if (remainingClarifications.Count > 0)
                 {
+                    // Re-enrich remaining clarifications to ensure OriginalTerm is set
+                    EnrichClarificationsWithOriginalTerms(remainingClarifications, text);
+                    
                     userInfo.Conversation.State = ConversationState.AwaitingClarification;
                     userInfo.Conversation.PendingClarifications = remainingClarifications;
                     userInfo.Conversation.PendingMealRequest = result.MealRequest;
@@ -746,25 +764,43 @@ public class CronometerPollingHostedService : BackgroundService
         // Record clarification pattern for learning (if we have pending clarifications)
         if (_memoryService != null && userInfo.Conversation.PendingClarifications.Count > 0)
         {
-            foreach (var clarification in userInfo.Conversation.PendingClarifications)
+            _logger.LogInformation("Recording clarification patterns. Pending clarifications: {Count}", 
+                userInfo.Conversation.PendingClarifications.Count);
+            
+            // Parse the user's response to map each answer to its corresponding clarification
+            var parsedResponses = ParseClarificationResponses(text, userInfo.Conversation.PendingClarifications);
+            
+            _logger.LogInformation("Parsed {ParsedCount} responses from user input for {TotalCount} clarifications",
+                parsedResponses.Count, userInfo.Conversation.PendingClarifications.Count);
+            
+            // Only record patterns when we can clearly associate a response with a clarification
+            foreach (var (clarification, answer) in parsedResponses)
             {
                 var termToRecord = !string.IsNullOrEmpty(clarification.OriginalTerm)
                     ? clarification.OriginalTerm
                     : clarification.ItemName;
 
+                _logger.LogInformation("Recording pattern: Term='{Term}', Type='{Type}', Answer='{Answer}'",
+                    termToRecord, clarification.Type.ToString(), answer);
+
                 var wasConfirmed = await _memoryService.RecordClarificationPatternAsync(
                     chatId,
                     termToRecord,
                     clarification.Type.ToString(),
-                    text,
+                    answer,
                     ct);
 
                 if (wasConfirmed)
                 {
                     _logger.LogInformation("🧠 New clarification preference confirmed: '{Term}' + {Type} -> '{Answer}'",
-                        termToRecord, clarification.Type, text);
+                        termToRecord, clarification.Type, answer);
                 }
             }
+        }
+        else
+        {
+            _logger.LogWarning("Not recording clarification patterns. MemoryService: {HasMemory}, PendingClarifications: {Count}",
+                _memoryService != null, userInfo.Conversation.PendingClarifications?.Count ?? 0);
         }
 
         userInfo.Conversation.State = ConversationState.Processing;
@@ -788,7 +824,10 @@ public class CronometerPollingHostedService : BackgroundService
 
             if (result.NeedsClarification && result.Clarifications.Count > 0)
             {
-                // Still needs more clarification
+                // Still needs more clarification - enrich with original terms from conversation history
+                var originalInput = GetOriginalMealDescriptionFromHistory(userInfo.Conversation.MessageHistory);
+                EnrichClarificationsWithOriginalTerms(result.Clarifications, originalInput);
+                
                 userInfo.Conversation.State = ConversationState.AwaitingClarification;
                 userInfo.Conversation.PendingClarifications = result.Clarifications;
                 userInfo.Conversation.PendingMealRequest = result.MealRequest;
@@ -867,12 +906,16 @@ public class CronometerPollingHostedService : BackgroundService
 
             if (result.NeedsClarification)
             {
+                // Enrich clarifications with original terms from conversation history
+                var originalInput = GetOriginalMealDescriptionFromHistory(userInfo.Conversation.MessageHistory);
+                EnrichClarificationsWithOriginalTerms(result.Clarifications, originalInput);
+                
                 userInfo.Conversation.State = ConversationState.AwaitingClarification;
                 userInfo.Conversation.PendingClarifications = result.Clarifications;
                 userInfo.Conversation.PendingMealRequest = result.MealRequest;
 
                 var clarificationMessage = FormatClarificationQuestions(result.Clarifications);
-                 userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                userInfo.Conversation.MessageHistory.Add(new ConversationMessage
                 {
                     Role = "assistant",
                     Content = clarificationMessage,
@@ -1137,11 +1180,15 @@ public class CronometerPollingHostedService : BackgroundService
 
             // Convert LLM clarifications to our model
             var clarifications = response.Clarifications?
-                .Select(c => new ClarificationItem
+                .Select(c => 
                 {
-                    Type = ParseClarificationType(c.Type),
-                    ItemName = c.ItemName,
-                    Question = c.Question
+                    _logger.LogInformation("Parsing clarification type: raw='{RawType}'", c.Type);
+                    return new ClarificationItem
+                    {
+                        Type = ParseClarificationType(c.Type),
+                        ItemName = c.ItemName,
+                        Question = c.Question
+                    };
                 })
                 .ToList() ?? new List<ClarificationItem>();
 
@@ -1175,12 +1222,16 @@ public class CronometerPollingHostedService : BackgroundService
 
     private static ClarificationType ParseClarificationType(string type)
     {
-        return type?.ToUpperInvariant() switch
+        // Normalize: remove underscores and convert to uppercase
+        var normalizedType = type?.Replace("_", "").ToUpperInvariant();
+        
+        return normalizedType switch
         {
-            "MISSING_SIZE" => ClarificationType.MissingSize,
-            "MISSING_WEIGHT" => ClarificationType.MissingWeight,
-            "AMBIGUOUS_UNIT" => ClarificationType.AmbiguousUnit,
-            "UNCLEAR_FOOD" => ClarificationType.FoodNotFound,
+            "MISSINGSIZE" => ClarificationType.MissingSize,
+            "MISSINGWEIGHT" => ClarificationType.MissingWeight,
+            "AMBIGUOUSUNIT" => ClarificationType.AmbiguousUnit,
+            "UNCLEARFOOD" => ClarificationType.FoodNotFound,
+            "FOODNOTFOUND" => ClarificationType.FoodNotFound,
             _ => ClarificationType.MissingWeight
         };
     }
@@ -1196,6 +1247,139 @@ public class CronometerPollingHostedService : BackgroundService
         return string.Join("\n", questions);
     }
 
+    /// <summary>
+    /// Parses user's response to clarification questions and maps each answer to its corresponding clarification.
+    /// Supports formats like: "1. grande 2. 200g" or "grande, 200g" or just "grande" (single clarification)
+    /// </summary>
+    private Dictionary<ClarificationItem, string> ParseClarificationResponses(
+        string userResponse, 
+        List<ClarificationItem> pendingClarifications)
+    {
+        var result = new Dictionary<ClarificationItem, string>();
+        
+        if (string.IsNullOrWhiteSpace(userResponse) || pendingClarifications.Count == 0)
+            return result;
+
+        var response = userResponse.Trim();
+        
+        // Case 1: Single clarification - the entire response is the answer
+        if (pendingClarifications.Count == 1)
+        {
+            result[pendingClarifications[0]] = response;
+            _logger.LogDebug("Single clarification, mapped entire response: '{Response}'", response);
+            return result;
+        }
+
+        // Case 2: Multiple clarifications - try to parse numbered responses
+        // Format: "1. grande 2. 200g" or "1) grande 2) 200g" or "1: grande 2: 200g"
+        var numberedPattern = new System.Text.RegularExpressions.Regex(
+            @"(?:^|\s)(\d+)[\.\)\:]\s*([^0-9]+?)(?=(?:\s+\d+[\.\)\:])|$)", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        var matches = numberedPattern.Matches(response);
+        
+        if (matches.Count > 0)
+        {
+            foreach (System.Text.RegularExpressions.Match match in matches)
+            {
+                if (int.TryParse(match.Groups[1].Value, out int num) && 
+                    num >= 1 && num <= pendingClarifications.Count)
+                {
+                    var answer = match.Groups[2].Value.Trim();
+                    if (!string.IsNullOrWhiteSpace(answer))
+                    {
+                        result[pendingClarifications[num - 1]] = answer;
+                        _logger.LogDebug("Parsed numbered response {Num}: '{Answer}'", num, answer);
+                    }
+                }
+            }
+            
+            if (result.Count > 0)
+                return result;
+        }
+
+        // Case 3: Try comma/semicolon/newline separated responses
+        var separators = new[] { ',', ';', '\n' };
+        var parts = response.Split(separators, StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+
+        if (parts.Count == pendingClarifications.Count)
+        {
+            for (int i = 0; i < parts.Count; i++)
+            {
+                result[pendingClarifications[i]] = parts[i];
+                _logger.LogDebug("Parsed separated response {Index}: '{Answer}'", i + 1, parts[i]);
+            }
+            return result;
+        }
+
+        // Case 4: Try to match responses based on clarification type keywords
+        foreach (var clarification in pendingClarifications)
+        {
+            var matchedAnswer = TryExtractAnswerForClarificationType(response, clarification);
+            if (!string.IsNullOrEmpty(matchedAnswer))
+            {
+                result[clarification] = matchedAnswer;
+                _logger.LogDebug("Matched by type {Type}: '{Answer}'", clarification.Type, matchedAnswer);
+            }
+        }
+
+        // Case 5: If we still couldn't parse, and there's only one answer-like segment
+        // Don't record anything - ambiguous response
+        if (result.Count == 0)
+        {
+            _logger.LogWarning("Could not parse clarification response: '{Response}' for {Count} clarifications",
+                response, pendingClarifications.Count);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Attempts to extract an answer for a specific clarification type from the response.
+    /// </summary>
+    private static string? TryExtractAnswerForClarificationType(string response, ClarificationItem clarification)
+    {
+        var responseLower = response.ToLowerInvariant();
+        
+        switch (clarification.Type)
+        {
+            case ClarificationType.MissingSize:
+                // Look for size keywords: pequeño, mediano, grande, chico, regular
+                var sizeKeywords = new[] { "pequeño", "pequeña", "chico", "chica", "mediano", "mediana", "regular", "grande", "extra grande", "xl", "small", "medium", "large" };
+                foreach (var keyword in sizeKeywords)
+                {
+                    if (responseLower.Contains(keyword))
+                        return keyword;
+                }
+                break;
+
+            case ClarificationType.MissingWeight:
+                // Look for weight/quantity patterns: 200g, 1 taza, 100ml, etc.
+                var weightPattern = new System.Text.RegularExpressions.Regex(
+                    @"(\d+(?:\.\d+)?\s*(?:g|gr|gramos?|kg|ml|l|litros?|oz|onzas?|lb|libras?|tazas?|cucharadas?|cdas?|cups?|tbsp|tsp))",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var match = weightPattern.Match(response);
+                if (match.Success)
+                    return match.Value.Trim();
+                break;
+
+            case ClarificationType.AmbiguousUnit:
+                // Look for unit clarifications: cucharada sopera, cucharadita, grande, etc.
+                var unitKeywords = new[] { "sopera", "postre", "café", "cucharadita", "cucharada grande", "tbsp", "tsp", "tablespoon", "teaspoon" };
+                foreach (var keyword in unitKeywords)
+                {
+                    if (responseLower.Contains(keyword))
+                        return keyword;
+                }
+                break;
+        }
+
+        return null;
+    }
+
     private static string BuildConversationContext(List<ConversationMessage> history)
     {
         // Build a comprehensive context from all messages
@@ -1204,6 +1388,23 @@ public class CronometerPollingHostedService : BackgroundService
             .Select(m => m.Content);
 
         return string.Join(". ", userMessages);
+    }
+
+    /// <summary>
+    /// Gets the original meal description from conversation history.
+    /// This is typically the first user message that describes the meal.
+    /// </summary>
+    private static string GetOriginalMealDescriptionFromHistory(List<ConversationMessage> history)
+    {
+        // Get the first user message, which typically contains the meal description
+        var firstUserMessage = history.FirstOrDefault(m => m.Role == "user");
+        if (firstUserMessage != null)
+        {
+            return firstUserMessage.Content;
+        }
+        
+        // Fallback: concatenate all user messages
+        return string.Join(" ", history.Where(m => m.Role == "user").Select(m => m.Content));
     }
 
     private async Task HandleLoginAsync(string chatId, string text, CancellationToken ct)
