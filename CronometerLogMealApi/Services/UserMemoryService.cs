@@ -18,6 +18,7 @@ public class UserMemoryService
 
     private const string AliasesCollection = "foodAliases";
     private const string PreferencesCollection = "measurePreferences";
+    private const string SessionsCollection = "cronometerSessions";
 
     public UserMemoryService(IOptions<FirebaseOptions> options, ILogger<UserMemoryService> logger)
     {
@@ -398,6 +399,433 @@ public class UserMemoryService
             return string.Empty;
 
         return input.Trim().ToLowerInvariant();
+    }
+
+    #endregion
+
+    #region Cronometer Sessions
+
+    /// <summary>
+    /// Saves or updates a Cronometer session for a Telegram user.
+    /// </summary>
+    public async Task SaveSessionAsync(
+        string telegramChatId,
+        long cronometerUserId,
+        string sessionKey,
+        string email,
+        CancellationToken ct = default)
+    {
+        // Check for existing session
+        var existingSession = await GetSessionAsync(telegramChatId, ct);
+
+        if (existingSession != null)
+        {
+            // Update existing session
+            var docRef = _db.Collection(SessionsCollection).Document(existingSession.Id);
+
+            existingSession.CronometerUserId = cronometerUserId;
+            existingSession.SessionKey = sessionKey;
+            existingSession.Email = email;
+            existingSession.LastUpdatedAt = DateTime.UtcNow;
+            existingSession.IsActive = true;
+
+            await docRef.SetAsync(existingSession, SetOptions.Overwrite, ct);
+            _logger.LogInformation("Updated Cronometer session for Telegram user {TelegramChatId}", telegramChatId);
+        }
+        else
+        {
+            // Create new session
+            var newSession = new CronometerSession
+            {
+                TelegramChatId = telegramChatId,
+                CronometerUserId = cronometerUserId,
+                SessionKey = sessionKey,
+                Email = email,
+                CreatedAt = DateTime.UtcNow,
+                LastUpdatedAt = DateTime.UtcNow,
+                IsActive = true
+            };
+
+            var newDocRef = await _db.Collection(SessionsCollection).AddAsync(newSession, ct);
+            newSession.Id = newDocRef.Id;
+
+            _logger.LogInformation("Created new Cronometer session for Telegram user {TelegramChatId}", telegramChatId);
+        }
+    }
+
+    /// <summary>
+    /// Gets a Cronometer session for a Telegram user.
+    /// </summary>
+    public async Task<CronometerSession?> GetSessionAsync(string telegramChatId, CancellationToken ct = default)
+    {
+        var query = _db.Collection(SessionsCollection)
+            .WhereEqualTo("telegramChatId", telegramChatId)
+            .WhereEqualTo("isActive", true)
+            .Limit(1);
+
+        var snapshot = await query.GetSnapshotAsync(ct);
+        var doc = snapshot.Documents.FirstOrDefault();
+
+        if (doc == null)
+        {
+            _logger.LogDebug("No session found for Telegram user {TelegramChatId}", telegramChatId);
+            return null;
+        }
+
+        var session = doc.ConvertTo<CronometerSession>();
+        session.Id = doc.Id;
+
+        _logger.LogDebug("Found session for Telegram user {TelegramChatId}, Cronometer user {CronometerUserId}",
+            telegramChatId, session.CronometerUserId);
+
+        return session;
+    }
+
+    /// <summary>
+    /// Gets all active Cronometer sessions.
+    /// Used to restore sessions on server startup.
+    /// </summary>
+    public async Task<List<CronometerSession>> GetAllActiveSessionsAsync(CancellationToken ct = default)
+    {
+        var query = _db.Collection(SessionsCollection)
+            .WhereEqualTo("isActive", true);
+
+        var snapshot = await query.GetSnapshotAsync(ct);
+
+        var sessions = snapshot.Documents
+            .Select(doc =>
+            {
+                var session = doc.ConvertTo<CronometerSession>();
+                session.Id = doc.Id;
+                return session;
+            })
+            .ToList();
+
+        _logger.LogInformation("Loaded {Count} active Cronometer sessions from Firestore", sessions.Count);
+
+        return sessions;
+    }
+
+    /// <summary>
+    /// Deactivates a Cronometer session (logout).
+    /// </summary>
+    public async Task DeactivateSessionAsync(string telegramChatId, CancellationToken ct = default)
+    {
+        var session = await GetSessionAsync(telegramChatId, ct);
+
+        if (session == null)
+        {
+            _logger.LogDebug("No session to deactivate for Telegram user {TelegramChatId}", telegramChatId);
+            return;
+        }
+
+        var docRef = _db.Collection(SessionsCollection).Document(session.Id);
+
+        await docRef.UpdateAsync(new Dictionary<string, object>
+        {
+            { "isActive", false },
+            { "lastUpdatedAt", DateTime.UtcNow }
+        }, cancellationToken: ct);
+
+        _logger.LogInformation("Deactivated Cronometer session for Telegram user {TelegramChatId}", telegramChatId);
+    }
+
+    #endregion
+
+    #region Alias Detection
+
+    /// <summary>
+    /// Detects all user aliases that appear in the input text.
+    /// This should be called BEFORE sending the text to the LLM.
+    /// </summary>
+    public async Task<List<DetectedAlias>> DetectAliasesInTextAsync(
+        string userId, 
+        string inputText, 
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(inputText))
+            return new List<DetectedAlias>();
+
+        // Get all user aliases
+        var userAliases = await GetUserAliasesAsync(userId, ct);
+        
+        if (userAliases.Count == 0)
+            return new List<DetectedAlias>();
+
+        var detectedAliases = new List<DetectedAlias>();
+        var normalizedInput = inputText.ToLowerInvariant();
+
+        // Sort aliases by length descending to match longer terms first
+        // This prevents "mi" from matching before "mi proteina"
+        var sortedAliases = userAliases.OrderByDescending(a => a.InputTerm.Length).ToList();
+
+        foreach (var alias in sortedAliases)
+        {
+            var searchTerm = alias.InputTerm.ToLowerInvariant();
+            var index = 0;
+
+            while ((index = normalizedInput.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) != -1)
+            {
+                // Check if this is a word boundary match (not part of another word)
+                var isWordStart = index == 0 || !char.IsLetterOrDigit(normalizedInput[index - 1]);
+                var endIndex = index + searchTerm.Length;
+                var isWordEnd = endIndex >= normalizedInput.Length || !char.IsLetterOrDigit(normalizedInput[endIndex]);
+
+                if (isWordStart && isWordEnd)
+                {
+                    // Check if this position is not already covered by a longer match
+                    var isOverlapping = detectedAliases.Any(d => 
+                        (index >= d.StartIndex && index < d.StartIndex + d.Length) ||
+                        (endIndex > d.StartIndex && endIndex <= d.StartIndex + d.Length));
+
+                    if (!isOverlapping)
+                    {
+                        detectedAliases.Add(new DetectedAlias
+                        {
+                            MatchedTerm = inputText.Substring(index, searchTerm.Length),
+                            StartIndex = index,
+                            Length = searchTerm.Length,
+                            Alias = alias
+                        });
+
+                        _logger.LogInformation(
+                            "🎯 Detected alias in text: '{Term}' -> '{ResolvedName}' at position {Index}",
+                            alias.InputTerm, alias.ResolvedFoodName, index);
+                    }
+                }
+
+                index = endIndex;
+            }
+        }
+
+        _logger.LogInformation("Detected {Count} aliases in user input", detectedAliases.Count);
+
+        return detectedAliases.OrderBy(d => d.StartIndex).ToList();
+    }
+
+    /// <summary>
+    /// Tries to find a pre-detected alias that matches a food name from the LLM output.
+    /// Uses fuzzy matching since the LLM might have translated or modified the term.
+    /// </summary>
+    public FoodAlias? FindMatchingDetectedAlias(
+        string foodNameFromLlm, 
+        List<DetectedAlias> detectedAliases,
+        string originalUserInput)
+    {
+        if (detectedAliases.Count == 0)
+            return null;
+
+        var normalizedFoodName = foodNameFromLlm.ToLowerInvariant();
+
+        // Strategy 1: Direct match with alias input term
+        foreach (var detected in detectedAliases)
+        {
+            var aliasTermLower = detected.Alias.InputTerm.ToLowerInvariant();
+            
+            // Check if the LLM food name contains the alias term or vice versa
+            if (normalizedFoodName.Contains(aliasTermLower) || 
+                aliasTermLower.Contains(normalizedFoodName))
+            {
+                _logger.LogInformation(
+                    "✅ Matched LLM output '{LlmFood}' to alias '{AliasTerm}' -> '{ResolvedName}'",
+                    foodNameFromLlm, detected.Alias.InputTerm, detected.Alias.ResolvedFoodName);
+                return detected.Alias;
+            }
+        }
+
+        // Strategy 2: Check if the LLM food name matches the resolved name
+        foreach (var detected in detectedAliases)
+        {
+            var resolvedNameLower = detected.Alias.ResolvedFoodName.ToLowerInvariant();
+            
+            if (normalizedFoodName.Contains(resolvedNameLower) || 
+                resolvedNameLower.Contains(normalizedFoodName))
+            {
+                _logger.LogInformation(
+                    "✅ Matched LLM output '{LlmFood}' to resolved name '{ResolvedName}' from alias '{AliasTerm}'",
+                    foodNameFromLlm, detected.Alias.ResolvedFoodName, detected.Alias.InputTerm);
+                return detected.Alias;
+            }
+        }
+
+        // Strategy 3: Check word overlap for partial matches
+        var foodWords = normalizedFoodName.Split(new[] { ' ', ',', '-' }, StringSplitOptions.RemoveEmptyEntries);
+        
+        foreach (var detected in detectedAliases)
+        {
+            var aliasWords = detected.Alias.InputTerm.ToLowerInvariant()
+                .Split(new[] { ' ', ',', '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+            // If any significant word matches
+            var matchingWords = foodWords.Intersect(aliasWords).ToList();
+            if (matchingWords.Count > 0 && matchingWords.Any(w => w.Length > 2))
+            {
+                _logger.LogInformation(
+                    "✅ Matched LLM output '{LlmFood}' to alias '{AliasTerm}' via word overlap: [{Words}]",
+                    foodNameFromLlm, detected.Alias.InputTerm, string.Join(", ", matchingWords));
+                return detected.Alias;
+            }
+        }
+
+        _logger.LogDebug("No alias match found for LLM output '{LlmFood}'", foodNameFromLlm);
+        return null;
+    }
+
+    #endregion
+
+    #region Clarification Preferences
+
+    private const string ClarificationPrefsCollection = "clarificationPreferences";
+
+    /// <summary>
+    /// Looks for a saved clarification preference for the given food term and clarification type.
+    /// Returns the preference only if it's confirmed (occurred 2+ times).
+    /// </summary>
+    public async Task<ClarificationPreference?> FindClarificationPreferenceAsync(
+        string userId, 
+        string foodTerm, 
+        string clarificationType, 
+        CancellationToken ct = default)
+    {
+        var normalizedTerm = NormalizeTerm(foodTerm);
+
+        var query = _db.Collection(ClarificationPrefsCollection)
+            .WhereEqualTo("userId", userId)
+            .WhereEqualTo("foodTerm", normalizedTerm)
+            .WhereEqualTo("clarificationType", clarificationType)
+            .WhereEqualTo("isConfirmed", true)
+            .Limit(1);
+
+        var snapshot = await query.GetSnapshotAsync(ct);
+        var doc = snapshot.Documents.FirstOrDefault();
+
+        if (doc == null)
+        {
+            _logger.LogDebug("No confirmed clarification preference for user {UserId}, term '{Term}', type '{Type}'", 
+                userId, normalizedTerm, clarificationType);
+            return null;
+        }
+
+        var pref = doc.ConvertTo<ClarificationPreference>();
+        pref.Id = doc.Id;
+
+        _logger.LogInformation("Found clarification preference: '{Term}' + {Type} -> '{Answer}'",
+            pref.FoodTerm, pref.ClarificationType, pref.DefaultAnswer);
+
+        return pref;
+    }
+
+    /// <summary>
+    /// Records a clarification answer. If the same pattern occurs twice, it becomes a confirmed preference.
+    /// </summary>
+    public async Task<bool> RecordClarificationPatternAsync(
+        string userId,
+        string foodTerm,
+        string clarificationType,
+        string answer,
+        CancellationToken ct = default)
+    {
+        var normalizedTerm = NormalizeTerm(foodTerm);
+        var normalizedAnswer = answer.Trim().ToLowerInvariant();
+
+        // Check if we already have a pending/confirmed preference for this pattern
+        var query = _db.Collection(ClarificationPrefsCollection)
+            .WhereEqualTo("userId", userId)
+            .WhereEqualTo("foodTerm", normalizedTerm)
+            .WhereEqualTo("clarificationType", clarificationType)
+            .Limit(1);
+
+        var snapshot = await query.GetSnapshotAsync(ct);
+        var existingDoc = snapshot.Documents.FirstOrDefault();
+
+        if (existingDoc != null)
+        {
+            var existing = existingDoc.ConvertTo<ClarificationPreference>();
+
+            // Check if the answer is the same
+            if (existing.DefaultAnswer.Equals(normalizedAnswer, StringComparison.OrdinalIgnoreCase))
+            {
+                // Same answer, increment count and potentially confirm
+                var newCount = existing.OccurrenceCount + 1;
+                var isNowConfirmed = newCount >= 2;
+
+                await existingDoc.Reference.UpdateAsync(new Dictionary<string, object>
+                {
+                    ["occurrenceCount"] = newCount,
+                    ["isConfirmed"] = isNowConfirmed,
+                    ["lastUsedAt"] = DateTime.UtcNow
+                }, cancellationToken: ct);
+
+                if (isNowConfirmed && !existing.IsConfirmed)
+                {
+                    _logger.LogInformation(
+                        "🧠 Clarification preference CONFIRMED: '{Term}' + {Type} -> '{Answer}' (count: {Count})",
+                        normalizedTerm, clarificationType, normalizedAnswer, newCount);
+                    return true; // Newly confirmed
+                }
+
+                _logger.LogDebug("Updated clarification pattern count: {Count}", newCount);
+                return false;
+            }
+            else
+            {
+                // Different answer, reset the count with new answer
+                await existingDoc.Reference.UpdateAsync(new Dictionary<string, object>
+                {
+                    ["defaultAnswer"] = normalizedAnswer,
+                    ["occurrenceCount"] = 1,
+                    ["isConfirmed"] = false,
+                    ["lastUsedAt"] = DateTime.UtcNow
+                }, cancellationToken: ct);
+
+                _logger.LogDebug("Clarification pattern reset with new answer: '{Answer}'", normalizedAnswer);
+                return false;
+            }
+        }
+        else
+        {
+            // Create new pending preference
+            var newPref = new Dictionary<string, object>
+            {
+                ["userId"] = userId,
+                ["foodTerm"] = normalizedTerm,
+                ["clarificationType"] = clarificationType,
+                ["defaultAnswer"] = normalizedAnswer,
+                ["occurrenceCount"] = 1,
+                ["isConfirmed"] = false,
+                ["createdAt"] = DateTime.UtcNow,
+                ["lastUsedAt"] = DateTime.UtcNow
+            };
+
+            await _db.Collection(ClarificationPrefsCollection).AddAsync(newPref, ct);
+            _logger.LogDebug("Created new clarification pattern: '{Term}' + {Type} -> '{Answer}'",
+                normalizedTerm, clarificationType, normalizedAnswer);
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets all confirmed clarification preferences for a user.
+    /// </summary>
+    public async Task<List<ClarificationPreference>> GetUserClarificationPreferencesAsync(
+        string userId, 
+        CancellationToken ct = default)
+    {
+        var query = _db.Collection(ClarificationPrefsCollection)
+            .WhereEqualTo("userId", userId)
+            .WhereEqualTo("isConfirmed", true);
+
+        var snapshot = await query.GetSnapshotAsync(ct);
+
+        return snapshot.Documents
+            .Select(doc =>
+            {
+                var pref = doc.ConvertTo<ClarificationPreference>();
+                pref.Id = doc.Id;
+                return pref;
+            })
+            .ToList();
     }
 
     #endregion

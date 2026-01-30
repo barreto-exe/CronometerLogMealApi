@@ -351,6 +351,8 @@ public class CronometerService
         IEnumerable<MealItem> items,
         AuthPayload auth,
         string? userId = null,
+        List<DetectedAlias>? detectedAliases = null,
+        string? originalUserInput = null,
         CancellationToken cancellationToken = default)
     {
         var validatedItems = new List<ValidatedMealItem>();
@@ -358,7 +360,41 @@ public class CronometerService
 
         foreach (var itemRequest in items)
         {
-            var searchResult = await GetFoodWithMemoryAsync(itemRequest.Name, auth, userId, cancellationToken);
+            // FIRST: Check if any pre-detected alias matches this item
+            FoodSearchResult? searchResult = null;
+            
+            if (detectedAliases != null && detectedAliases.Count > 0 && _memoryService != null && !string.IsNullOrEmpty(originalUserInput))
+            {
+                var matchingAlias = _memoryService.FindMatchingDetectedAlias(
+                    itemRequest.Name, 
+                    detectedAliases,
+                    originalUserInput);
+                
+                if (matchingAlias != null)
+                {
+                    logger.LogInformation(
+                        "✨ Pre-detected alias matched! LLM output '{LlmName}' -> alias '{AliasTerm}' -> '{ResolvedName}' (ID: {Id})",
+                        itemRequest.Name,
+                        matchingAlias.InputTerm,
+                        matchingAlias.ResolvedFoodName,
+                        matchingAlias.ResolvedFoodId);
+
+                    // Increment usage
+                    await _memoryService.IncrementAliasUsageAsync(matchingAlias.Id, cancellationToken);
+
+                    searchResult = new FoodSearchResult
+                    {
+                        FoodId = matchingAlias.ResolvedFoodId,
+                        FoodName = matchingAlias.ResolvedFoodName,
+                        SourceTab = matchingAlias.SourceTab,
+                        WasFromAlias = true,
+                        AliasId = matchingAlias.Id
+                    };
+                }
+            }
+
+            // If no pre-detected alias matched, use the regular search (which also checks aliases)
+            searchResult ??= await GetFoodWithMemoryAsync(itemRequest.Name, auth, userId, cancellationToken);
             
             if (searchResult.FoodId == 0)
             {

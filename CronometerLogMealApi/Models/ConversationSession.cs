@@ -78,6 +78,23 @@ public class ConversationSession
     public string? PendingDeleteAliasId { get; set; }
 
     /// <summary>
+    /// Aliases detected in the user's original input text (pre-LLM processing).
+    /// </summary>
+    public List<UserMemory.DetectedAlias> DetectedAliases { get; set; } = new();
+
+    /// <summary>
+    /// Mapping of LLM-translated food names to original user terms.
+    /// Key: translated name (e.g., "Egg"), Value: original term (e.g., "huevos")
+    /// </summary>
+    public Dictionary<string, string> OriginalFoodTerms { get; set; } = new();
+
+    /// <summary>
+    /// Clarification patterns observed in this session.
+    /// Tracks food term -> clarification type -> user's answer
+    /// </summary>
+    public List<UserMemory.PendingClarificationPattern> ClarificationPatterns { get; set; } = new();
+
+    /// <summary>
     /// Session timeout duration (default: 10 minutes).
     /// </summary>
     public static readonly TimeSpan SessionTimeout = TimeSpan.FromMinutes(10);
@@ -199,9 +216,14 @@ public class ClarificationItem
     public ClarificationType Type { get; set; }
 
     /// <summary>
-    /// Name of the item requiring clarification.
+    /// Name of the item requiring clarification (may be LLM-translated).
     /// </summary>
     public string ItemName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Original term used by the user (in their language, before LLM translation).
+    /// </summary>
+    public string OriginalTerm { get; set; } = string.Empty;
 
     /// <summary>
     /// The question to ask the user.

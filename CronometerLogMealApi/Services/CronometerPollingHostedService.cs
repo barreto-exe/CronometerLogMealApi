@@ -53,6 +53,9 @@ public class CronometerPollingHostedService : BackgroundService
         // Ensure service is initialized
         await _telegramService.InitAsync(stoppingToken);
 
+        // Restore sessions from Firestore
+        await RestoreSessionsFromFirestoreAsync(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -80,6 +83,43 @@ public class CronometerPollingHostedService : BackgroundService
             {
                 // ignore
             }
+        }
+    }
+
+    /// <summary>
+    /// Restores user sessions from Firestore on server startup.
+    /// </summary>
+    private async Task RestoreSessionsFromFirestoreAsync(CancellationToken ct)
+    {
+        if (_memoryService == null)
+        {
+            _logger.LogInformation("Memory service not available, skipping session restoration");
+            return;
+        }
+
+        try
+        {
+            var sessions = await _memoryService.GetAllActiveSessionsAsync(ct);
+
+            foreach (var session in sessions)
+            {
+                var userInfo = new CronometerUserInfo
+                {
+                    Email = session.Email,
+                    UserId = session.CronometerUserId,
+                    SessionKey = session.SessionKey
+                };
+
+                _userSessions.AddOrUpdate(session.TelegramChatId, userInfo, (key, oldValue) => userInfo);
+                _logger.LogInformation("Restored session for Telegram user {TelegramChatId} ({Email})",
+                    session.TelegramChatId, session.Email);
+            }
+
+            _logger.LogInformation("Restored {Count} user sessions from Firestore", sessions.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error restoring sessions from Firestore");
         }
     }
 
@@ -560,7 +600,28 @@ public class CronometerPollingHostedService : BackgroundService
 
         try
         {
-            var result = await ProcessMealDescriptionAsync(text, ct);
+            // STEP 1: Detect aliases in the user's text BEFORE sending to LLM
+            var textForLlm = text;
+            if (_memoryService != null)
+            {
+                var detectedAliases = await _memoryService.DetectAliasesInTextAsync(chatId, text, ct);
+                userInfo.Conversation.DetectedAliases = detectedAliases;
+                
+                if (detectedAliases.Count > 0)
+                {
+                    _logger.LogInformation("Pre-detected {Count} aliases in user input: [{Aliases}]",
+                        detectedAliases.Count,
+                        string.Join(", ", detectedAliases.Select(a => $"'{a.Alias.InputTerm}' -> '{a.Alias.ResolvedFoodName}'")));
+                    
+                    // STEP 1.5: Replace aliases in text with their resolved names for LLM processing
+                    // This prevents LLM from asking "what type of X?" for known aliases
+                    textForLlm = ReplaceAliasesInText(text, detectedAliases);
+                    _logger.LogInformation("Text after alias replacement: '{TextForLlm}'", textForLlm);
+                }
+            }
+
+            // STEP 2: Send to LLM for parsing (with aliases replaced)
+            var result = await ProcessMealDescriptionAsync(textForLlm, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {
@@ -573,23 +634,90 @@ public class CronometerPollingHostedService : BackgroundService
 
             if (result.NeedsClarification && result.Clarifications.Count > 0)
             {
-                userInfo.Conversation.State = ConversationState.AwaitingClarification;
-                userInfo.Conversation.PendingClarifications = result.Clarifications;
-                userInfo.Conversation.PendingMealRequest = result.MealRequest;
+                // Enrich clarifications with original terms from user input
+                EnrichClarificationsWithOriginalTerms(result.Clarifications, text);
 
-                var clarificationMessage = FormatClarificationQuestions(result.Clarifications);
+                // Check if we have saved preferences for any clarifications
+                var remainingClarifications = new List<ClarificationItem>();
+                var autoAppliedAnswers = new List<string>();
 
-                userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                if (_memoryService != null)
                 {
-                    Role = "assistant",
-                    Content = clarificationMessage,
-                    Timestamp = DateTime.UtcNow
-                });
+                    foreach (var clarification in result.Clarifications)
+                    {
+                        var termToCheck = !string.IsNullOrEmpty(clarification.OriginalTerm) 
+                            ? clarification.OriginalTerm 
+                            : clarification.ItemName;
 
-                await _telegramService.SendMessageAsync(chatId,
-                    "🤔 Necesito un poco más de información:\n\n" + clarificationMessage,
-                    "HTML", ct);
-                return;
+                        var preference = await _memoryService.FindClarificationPreferenceAsync(
+                            chatId, termToCheck, clarification.Type.ToString(), ct);
+
+                        if (preference != null)
+                        {
+                            // Auto-apply the preference
+                            autoAppliedAnswers.Add($"{termToCheck} -> {preference.DefaultAnswer}");
+                            _logger.LogInformation("🧠 Auto-applying clarification preference: '{Term}' + {Type} -> '{Answer}'",
+                                termToCheck, clarification.Type, preference.DefaultAnswer);
+                            
+                            // Add the answer to conversation history so LLM uses it
+                            userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                            {
+                                Role = "user",
+                                Content = preference.DefaultAnswer,
+                                Timestamp = DateTime.UtcNow
+                            });
+                        }
+                        else
+                        {
+                            remainingClarifications.Add(clarification);
+                        }
+                    }
+                }
+                else
+                {
+                    remainingClarifications = result.Clarifications;
+                }
+
+                // If all clarifications were auto-applied, re-process
+                if (remainingClarifications.Count == 0 && autoAppliedAnswers.Count > 0)
+                {
+                    await _telegramService.SendMessageAsync(chatId,
+                        $"🧠 Usando tus preferencias guardadas ({string.Join(", ", autoAppliedAnswers)})...",
+                        null, ct);
+
+                    // Re-process with the added answers
+                    var fullContext = BuildConversationContext(userInfo.Conversation.MessageHistory);
+                    var retryResult = await ProcessMealDescriptionAsync(fullContext, ct);
+
+                    if (!retryResult.NeedsClarification && retryResult.MealRequest != null)
+                    {
+                        await AttemptMealLoggingAsync(chatId, userInfo, retryResult.MealRequest, ct);
+                        return;
+                    }
+                    // If still needs clarification, fall through to ask
+                    remainingClarifications = retryResult.Clarifications;
+                }
+
+                if (remainingClarifications.Count > 0)
+                {
+                    userInfo.Conversation.State = ConversationState.AwaitingClarification;
+                    userInfo.Conversation.PendingClarifications = remainingClarifications;
+                    userInfo.Conversation.PendingMealRequest = result.MealRequest;
+
+                    var clarificationMessage = FormatClarificationQuestions(remainingClarifications);
+
+                    userInfo.Conversation.MessageHistory.Add(new ConversationMessage
+                    {
+                        Role = "assistant",
+                        Content = clarificationMessage,
+                        Timestamp = DateTime.UtcNow
+                    });
+
+                    await _telegramService.SendMessageAsync(chatId,
+                        "🤔 Necesito un poco más de información:\n\n" + clarificationMessage,
+                        "HTML", ct);
+                    return;
+                }
             }
 
             // No clarification needed, try to log the meal
@@ -614,6 +742,30 @@ public class CronometerPollingHostedService : BackgroundService
             Content = text,
             Timestamp = DateTime.UtcNow
         });
+
+        // Record clarification pattern for learning (if we have pending clarifications)
+        if (_memoryService != null && userInfo.Conversation.PendingClarifications.Count > 0)
+        {
+            foreach (var clarification in userInfo.Conversation.PendingClarifications)
+            {
+                var termToRecord = !string.IsNullOrEmpty(clarification.OriginalTerm)
+                    ? clarification.OriginalTerm
+                    : clarification.ItemName;
+
+                var wasConfirmed = await _memoryService.RecordClarificationPatternAsync(
+                    chatId,
+                    termToRecord,
+                    clarification.Type.ToString(),
+                    text,
+                    ct);
+
+                if (wasConfirmed)
+                {
+                    _logger.LogInformation("🧠 New clarification preference confirmed: '{Term}' + {Type} -> '{Answer}'",
+                        termToRecord, clarification.Type, text);
+                }
+            }
+        }
 
         userInfo.Conversation.State = ConversationState.Processing;
         await _telegramService.SendMessageAsync(chatId, "⏳ Procesando tu respuesta...", null, ct);
@@ -879,11 +1031,13 @@ public class CronometerPollingHostedService : BackgroundService
     {
         await _telegramService.SendMessageAsync(chatId, "🔍 Validando con Cronometer...", null, ct);
 
-        // Perform validation with memory support
+        // Perform validation with memory support and pre-detected aliases
         var (validatedItems, notFoundItems) = await _cronometerService.ValidateMealItemsAsync(
             request.Items,
             new AuthPayload { UserId = userInfo.UserId!.Value, Token = userInfo.SessionKey! },
             chatId, // Pass userId for memory lookup
+            userInfo.Conversation?.DetectedAliases, // Pass pre-detected aliases
+            userInfo.Conversation?.OriginalDescription, // Pass original text for alias matching
             ct);
 
         if (notFoundItems.Count > 0)
@@ -914,19 +1068,10 @@ public class CronometerPollingHostedService : BackgroundService
         userInfo.Conversation.ValidatedFoods = validatedItems;
         userInfo.Conversation.State = ConversationState.AwaitingConfirmation;
 
-        // Prepare pending learnings for items that weren't resolved from aliases
-        userInfo.Conversation.PendingLearnings = validatedItems
-            .Where(v => !v.WasResolvedFromAlias && 
-                       !string.Equals(v.OriginalName, v.FoodName, StringComparison.OrdinalIgnoreCase))
-            .Select(v => new PendingLearning
-            {
-                OriginalTerm = v.OriginalName,
-                ResolvedFoodName = v.FoodName,
-                ResolvedFoodId = v.FoodId,
-                SourceTab = v.SourceTab,
-                IsFoodAlias = true
-            })
-            .ToList();
+        // Clear previous pending learnings - only add when user explicitly searches for alternatives
+        // We don't auto-suggest learnings for translated terms (e.g., "huevos" -> "Eggs")
+        // because that's just the LLM doing translation, not user preference
+        userInfo.Conversation.PendingLearnings.Clear();
 
         // Build summary message
         var itemsSummary = string.Join("\n", validatedItems.Select((item, idx) =>
@@ -935,11 +1080,14 @@ public class CronometerPollingHostedService : BackgroundService
             return $"{idx + 1}. {item.DisplayQuantity} de <b>{item.FoodName}</b>{aliasIndicator}";
         }));
 
+        var hasMemoryItems = validatedItems.Any(v => v.WasResolvedFromAlias);
+        var memoryLegend = hasMemoryItems ? "🧠 = reconocido desde tu memoria\n\n" : "";
+
         var msg = $"💾 Estás a punto de registrar:\n\n" +
                   $"<b>Hora:</b> {request.Date:h:mm tt}\n" +
                   $"<b>Tipo:</b> {request.Category.ToUpper()}\n\n" +
                   $"<b>Alimentos:</b>\n{itemsSummary}\n\n" +
-                  "🧠 = reconocido desde tu memoria\n\n" +
+                  memoryLegend +
                   "¿Deseas hacer algún cambio?\n" +
                   "• Responde con el número del item para <b>buscar alternativas</b>\n" +
                   "• Usa <b>/save</b> para guardar los cambios";
@@ -1101,6 +1249,26 @@ public class CronometerPollingHostedService : BackgroundService
         };
 
         _userSessions.AddOrUpdate(chatId, userInfo, (key, oldValue) => userInfo);
+
+        // Save session to Firestore for persistence across restarts
+        if (_memoryService != null && !string.IsNullOrEmpty(loginResponse.SessionKey))
+        {
+            try
+            {
+                await _memoryService.SaveSessionAsync(
+                    chatId,
+                    loginResponse.Id,
+                    loginResponse.SessionKey,
+                    email,
+                    ct);
+                _logger.LogInformation("Saved session to Firestore for user {Email}", email);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to save session to Firestore for user {Email}", email);
+                // Don't fail the login if session persistence fails
+            }
+        }
 
         var successReply =
             "✅ <b>Inicio de sesión exitoso.</b>\n\n" +
@@ -1615,6 +1783,125 @@ public class CronometerPollingHostedService : BackgroundService
     }
 
     #endregion
+
+    /// <summary>
+    /// Enriches clarification items with the original food terms from user input.
+    /// This maps LLM-translated names (e.g., "Egg") back to original terms (e.g., "huevos").
+    /// </summary>
+    private static void EnrichClarificationsWithOriginalTerms(List<ClarificationItem> clarifications, string originalInput)
+    {
+        if (string.IsNullOrWhiteSpace(originalInput))
+            return;
+
+        var inputLower = originalInput.ToLowerInvariant();
+        
+        // Common food terms in Spanish and their potential English translations
+        var commonTranslations = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "huevo", new[] { "egg", "eggs" } },
+            { "huevos", new[] { "egg", "eggs" } },
+            { "pollo", new[] { "chicken" } },
+            { "arroz", new[] { "rice" } },
+            { "leche", new[] { "milk" } },
+            { "pan", new[] { "bread" } },
+            { "carne", new[] { "meat", "beef" } },
+            { "pescado", new[] { "fish" } },
+            { "queso", new[] { "cheese" } },
+            { "mantequilla", new[] { "butter" } },
+            { "aceite", new[] { "oil" } },
+            { "azucar", new[] { "sugar" } },
+            { "azúcar", new[] { "sugar" } },
+            { "sal", new[] { "salt" } },
+            { "agua", new[] { "water" } },
+            { "café", new[] { "coffee" } },
+            { "cafe", new[] { "coffee" } },
+            { "té", new[] { "tea" } },
+            { "te", new[] { "tea" } },
+            { "manzana", new[] { "apple" } },
+            { "banana", new[] { "banana" } },
+            { "platano", new[] { "banana", "plantain" } },
+            { "plátano", new[] { "banana", "plantain" } },
+            { "naranja", new[] { "orange" } },
+            { "tomate", new[] { "tomato" } },
+            { "papa", new[] { "potato" } },
+            { "patata", new[] { "potato" } },
+            { "zanahoria", new[] { "carrot" } },
+            { "cebolla", new[] { "onion" } },
+            { "ajo", new[] { "garlic" } },
+            { "proteina", new[] { "protein" } },
+            { "proteína", new[] { "protein" } },
+            { "avena", new[] { "oatmeal", "oats" } },
+            { "yogur", new[] { "yogurt" } },
+            { "yogurt", new[] { "yogurt" } },
+        };
+
+        foreach (var clarification in clarifications)
+        {
+            var itemNameLower = clarification.ItemName.ToLowerInvariant();
+            
+            // Strategy 1: Direct search in original input
+            foreach (var (spanish, englishVariants) in commonTranslations)
+            {
+                if (englishVariants.Any(en => itemNameLower.Contains(en)) && 
+                    inputLower.Contains(spanish.ToLowerInvariant()))
+                {
+                    clarification.OriginalTerm = spanish;
+                    break;
+                }
+            }
+
+            // Strategy 2: If no translation found, try to find any word from itemName in input
+            if (string.IsNullOrEmpty(clarification.OriginalTerm))
+            {
+                var inputWords = originalInput.Split(new[] { ' ', ',', '.', '!', '?', '\n', '\r' }, 
+                    StringSplitOptions.RemoveEmptyEntries);
+                
+                foreach (var word in inputWords)
+                {
+                    // Skip common words and numbers
+                    if (word.Length < 3 || double.TryParse(word, out _))
+                        continue;
+                    
+                    // Check if this word might be the food term
+                    var wordLower = word.ToLowerInvariant();
+                    if (commonTranslations.ContainsKey(wordLower) || 
+                        itemNameLower.Contains(wordLower) ||
+                        wordLower.Contains(itemNameLower.Split(' ').FirstOrDefault() ?? ""))
+                    {
+                        clarification.OriginalTerm = word;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Replaces detected aliases in the user's text with their resolved food names.
+    /// This helps the LLM understand what the user means without asking clarifying questions.
+    /// </summary>
+    private static string ReplaceAliasesInText(string text, List<DetectedAlias> detectedAliases)
+    {
+        if (detectedAliases.Count == 0)
+            return text;
+
+        // Sort by start index descending so we replace from end to start
+        // This preserves the indices of earlier matches
+        var sortedAliases = detectedAliases
+            .OrderByDescending(a => a.StartIndex)
+            .ToList();
+
+        var result = text;
+        foreach (var detected in sortedAliases)
+        {
+            // Replace the matched term with the resolved food name
+            var before = result.Substring(0, detected.StartIndex);
+            var after = result.Substring(detected.StartIndex + detected.Length);
+            result = before + detected.Alias.ResolvedFoodName + after;
+        }
+
+        return result;
+    }
 
     private string RemoveMarkdown(string text)
     {
