@@ -17,18 +17,21 @@ public class SaveCommandHandler : ICommandHandler
     private readonly ITelegramService _telegramService;
     private readonly CronometerHttpClient _cronometerClient;
     private readonly IUserMemoryService? _memoryService;
+    private readonly ISessionLogService? _sessionLogService;
     private readonly ILogger<SaveCommandHandler> _logger;
 
     public SaveCommandHandler(
         ITelegramService telegramService,
         CronometerHttpClient cronometerClient,
         ILogger<SaveCommandHandler> logger,
-        IUserMemoryService? memoryService = null)
+        IUserMemoryService? memoryService = null,
+        ISessionLogService? sessionLogService = null)
     {
         _telegramService = telegramService;
         _cronometerClient = cronometerClient;
         _logger = logger;
         _memoryService = memoryService;
+        _sessionLogService = sessionLogService;
     }
 
     public bool CanHandle(string? command)
@@ -101,7 +104,12 @@ public class SaveCommandHandler : ICommandHandler
                 });
             }
 
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var result = await _cronometerClient.AddMultiServingAsync(servingPayload, ct);
+            sw.Stop();
+
+            _sessionLogService?.LogHttpCall(context.ChatId, "cronometer", "add_multi_serving", 
+                new { itemCount = servingPayload.Servings.Count }, result, null, sw.ElapsedMilliseconds);
 
             bool hasFailed = result != null &&
                 result.Raw.ValueKind == JsonValueKind.Object &&
@@ -127,7 +135,11 @@ public class SaveCommandHandler : ICommandHandler
             }
             else
             {
+                var itemCount = conversation.ValidatedFoods.Count;
+                var originalDescription = conversation.OriginalDescription;
                 context.UserInfo.Conversation = null;
+                
+                await _sessionLogService?.EndSessionAsync(context.ChatId, "completed", itemCount, originalDescription, ct)!;
                 await _telegramService.SendMessageAsync(context.ChatId,
                     TelegramMessages.Meal.SaveSuccess, "HTML", ct);
             }

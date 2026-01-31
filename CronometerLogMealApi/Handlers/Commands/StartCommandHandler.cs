@@ -12,13 +12,16 @@ public class StartCommandHandler : ICommandHandler
 {
     private readonly ITelegramService _telegramService;
     private readonly ILogger<StartCommandHandler> _logger;
+    private readonly ISessionLogService? _sessionLogService;
 
     public StartCommandHandler(
         ITelegramService telegramService,
-        ILogger<StartCommandHandler> logger)
+        ILogger<StartCommandHandler> logger,
+        ISessionLogService? sessionLogService = null)
     {
         _telegramService = telegramService;
         _logger = logger;
+        _sessionLogService = sessionLogService;
     }
 
     public bool CanHandle(string? command)
@@ -45,6 +48,8 @@ public class StartCommandHandler : ICommandHandler
         }
 
         // Initialize new conversation session
+        _sessionLogService?.StartSession(context.ChatId);
+        
         context.UserInfo.Conversation = new ConversationSession
         {
             State = ConversationState.AwaitingMealDescription,
@@ -54,6 +59,7 @@ public class StartCommandHandler : ICommandHandler
         };
 
         await _telegramService.SendMessageAsync(context.ChatId, TelegramMessages.Meal.NewSessionStarted, "HTML", ct);
+        _sessionLogService?.LogBotResponse(context.ChatId, TelegramMessages.Meal.NewSessionStarted);
         
         _logger.LogInformation("Started new meal session for chatId {ChatId}", context.ChatId);
     }

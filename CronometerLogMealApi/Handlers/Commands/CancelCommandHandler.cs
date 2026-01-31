@@ -12,13 +12,16 @@ public class CancelCommandHandler : ICommandHandler
 {
     private readonly ITelegramService _telegramService;
     private readonly ILogger<CancelCommandHandler> _logger;
+    private readonly ISessionLogService? _sessionLogService;
 
     public CancelCommandHandler(
         ITelegramService telegramService,
-        ILogger<CancelCommandHandler> logger)
+        ILogger<CancelCommandHandler> logger,
+        ISessionLogService? sessionLogService = null)
     {
         _telegramService = telegramService;
         _logger = logger;
+        _sessionLogService = sessionLogService;
     }
 
     public bool CanHandle(string? command)
@@ -43,8 +46,10 @@ public class CancelCommandHandler : ICommandHandler
             return;
         }
 
+        var originalDescription = context.UserInfo.Conversation?.OriginalDescription;
         context.UserInfo.Conversation = null;
 
+        await _sessionLogService?.EndSessionAsync(context.ChatId, "cancelled", 0, originalDescription, ct)!;
         await _telegramService.SendMessageAsync(context.ChatId, TelegramMessages.Session.Cancelled, null, ct);
         
         _logger.LogInformation("Cancelled session for chatId {ChatId}", context.ChatId);

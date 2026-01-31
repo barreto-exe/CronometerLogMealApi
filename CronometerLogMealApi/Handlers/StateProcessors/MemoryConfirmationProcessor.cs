@@ -13,6 +13,7 @@ public class MemoryConfirmationProcessor : IStateProcessor
 {
     private readonly ITelegramService _telegramService;
     private readonly IUserMemoryService? _memoryService;
+    private readonly ISessionLogService? _sessionLogService;
     private readonly ILogger<MemoryConfirmationProcessor> _logger;
 
     public ConversationState HandledState => ConversationState.AwaitingMemoryConfirmation;
@@ -20,11 +21,13 @@ public class MemoryConfirmationProcessor : IStateProcessor
     public MemoryConfirmationProcessor(
         ITelegramService telegramService,
         ILogger<MemoryConfirmationProcessor> logger,
-        IUserMemoryService? memoryService = null)
+        IUserMemoryService? memoryService = null,
+        ISessionLogService? sessionLogService = null)
     {
         _telegramService = telegramService;
         _logger = logger;
         _memoryService = memoryService;
+        _sessionLogService = sessionLogService;
     }
 
     public async Task ProcessAsync(StateContext context, CancellationToken ct)
@@ -37,7 +40,11 @@ public class MemoryConfirmationProcessor : IStateProcessor
 
         if (_memoryService == null || pendingLearnings.Count == 0)
         {
+            var itemCount = conversation.ValidatedFoods?.Count ?? 0;
+            var originalDescription = conversation.OriginalDescription;
             context.UserInfo.Conversation = null;
+            
+            await _sessionLogService?.EndSessionAsync(context.ChatId, "completed", itemCount, originalDescription, ct)!;
             await _telegramService.SendMessageAsync(context.ChatId,
                 TelegramMessages.Preferences.Done, null, ct);
             return;
@@ -51,7 +58,11 @@ public class MemoryConfirmationProcessor : IStateProcessor
         }
         else if (trimmed == "no" || trimmed == "n")
         {
+            var itemCount = conversation.ValidatedFoods?.Count ?? 0;
+            var originalDescription = conversation.OriginalDescription;
             context.UserInfo.Conversation = null;
+            
+            await _sessionLogService?.EndSessionAsync(context.ChatId, "completed", itemCount, originalDescription, ct)!;
             await _telegramService.SendMessageAsync(context.ChatId,
                 TelegramMessages.Preferences.NoPreferencesSaved, null, ct);
             return;
@@ -96,7 +107,11 @@ public class MemoryConfirmationProcessor : IStateProcessor
             }
         }
 
+        var itemCountFinal = conversation.ValidatedFoods?.Count ?? 0;
+        var originalDescFinal = conversation.OriginalDescription;
         context.UserInfo.Conversation = null;
+        
+        await _sessionLogService?.EndSessionAsync(context.ChatId, "completed", itemCountFinal, originalDescFinal, ct)!;
         await _telegramService.SendMessageAsync(context.ChatId,
             TelegramMessages.Preferences.FormatPreferencesSaved(learningsToSave.Count), "HTML", ct);
     }

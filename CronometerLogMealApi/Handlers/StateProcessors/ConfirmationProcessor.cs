@@ -62,7 +62,7 @@ public class ConfirmationProcessor : IStateProcessor
         try
         {
             var fullContext = ConversationContextBuilder.Build(conversation.MessageHistory);
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, ct);
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {

@@ -6,6 +6,7 @@ using CronometerLogMealApi.Constants;
 using CronometerLogMealApi.Handlers;
 using CronometerLogMealApi.Handlers.StateProcessors;
 using CronometerLogMealApi.Models;
+using System.Diagnostics;
 
 namespace CronometerLogMealApi.Services;
 
@@ -23,6 +24,7 @@ public class TelegramPollingService : BackgroundService
     private readonly ISessionManager _sessionManager;
     private readonly IOcrService _ocrService;
     private readonly IUserMemoryService? _memoryService;
+    private readonly ISessionLogService? _sessionLogService;
     
     // Command handlers
     private readonly IEnumerable<ICommandHandler> _commandHandlers;
@@ -42,7 +44,8 @@ public class TelegramPollingService : BackgroundService
         IEnumerable<ICommandHandler> commandHandlers,
         IEnumerable<IStateProcessor> stateProcessors,
         OcrCorrectionProcessor ocrProcessor,
-        IUserMemoryService? memoryService = null)
+        IUserMemoryService? memoryService = null,
+        ISessionLogService? sessionLogService = null)
     {
         _logger = logger;
         _telegramService = telegramService;
@@ -52,6 +55,7 @@ public class TelegramPollingService : BackgroundService
         _commandHandlers = commandHandlers;
         _ocrProcessor = ocrProcessor;
         _memoryService = memoryService;
+        _sessionLogService = sessionLogService;
         
         // Build state processor dictionary for fast lookup
         _stateProcessors = stateProcessors.ToDictionary(p => p.HandledState);
@@ -149,6 +153,7 @@ public class TelegramPollingService : BackgroundService
         if (string.IsNullOrWhiteSpace(text)) return;
 
         _logger.LogInformation("[Telegram] {ChatId}: {Text}", chatIdStr, text);
+        _sessionLogService?.LogUserMessage(chatIdStr, text);
 
         // Get or create user context
         var userInfo = _sessionManager.GetSession(chatIdStr);
@@ -254,6 +259,7 @@ public class TelegramPollingService : BackgroundService
 
         await _telegramService.SendMessageAsync(chatId, TelegramMessages.Ocr.ProcessingPhoto, null, ct);
 
+        var sw = Stopwatch.StartNew();
         try
         {
             var largestPhoto = photos.OrderByDescending(p => p.FileSize ?? 0).First();
@@ -269,6 +275,7 @@ public class TelegramPollingService : BackgroundService
 
             var imageBytes = await _telegramClient.DownloadFileAsync(fileResponse.Result.FilePath, ct);
             var extractedText = await _ocrService.ExtractTextFromImageAsync(imageBytes, ct);
+            sw.Stop();
 
             if (string.IsNullOrWhiteSpace(extractedText))
             {
@@ -278,11 +285,16 @@ public class TelegramPollingService : BackgroundService
 
             _logger.LogInformation("[OCR] Extracted text for chatId {ChatId}: {Text}", chatId, extractedText);
 
-            // Initialize or update conversation
-            if (userInfo.Conversation == null || 
+            // Initialize or update conversation - MUST happen before logging OCR
+            bool isNewSession = userInfo.Conversation == null || 
                 userInfo.Conversation.IsExpired || 
-                userInfo.Conversation.State == ConversationState.Idle)
+                userInfo.Conversation.State == ConversationState.Idle;
+                
+            if (isNewSession)
             {
+                // This is a new session started via photo
+                _sessionLogService?.StartSession(chatId);
+                
                 userInfo.Conversation = new ConversationSession
                 {
                     State = ConversationState.AwaitingOCRCorrection,
@@ -293,9 +305,14 @@ public class TelegramPollingService : BackgroundService
             }
             else
             {
+                var oldState = userInfo.Conversation.State.ToString();
                 userInfo.Conversation.State = ConversationState.AwaitingOCRCorrection;
                 userInfo.Conversation.Touch();
+                _sessionLogService?.LogStateChange(chatId, oldState, ConversationState.AwaitingOCRCorrection.ToString(), "photo_received");
             }
+
+            // Log OCR after session is started
+            _sessionLogService?.LogOcr(chatId, extractedText, sw.ElapsedMilliseconds, true);
 
             userInfo.Conversation.OcrExtractedText = extractedText;
 

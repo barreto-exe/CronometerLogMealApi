@@ -78,6 +78,10 @@ if (!string.IsNullOrWhiteSpace(firebaseProjectId))
 {
     builder.Services.AddSingleton<UserMemoryService>();
     builder.Services.AddSingleton<IUserMemoryService>(sp => sp.GetRequiredService<UserMemoryService>());
+    
+    // Session logging service
+    builder.Services.AddSingleton<SessionLogService>();
+    builder.Services.AddSingleton<ISessionLogService>(sp => sp.GetRequiredService<SessionLogService>());
 }
 
 // ===== COMMAND HANDLERS =====

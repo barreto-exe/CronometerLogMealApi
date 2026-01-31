@@ -80,7 +80,7 @@ public class OcrCorrectionProcessor : IStateProcessor
                 Timestamp = DateTime.UtcNow
             });
 
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullDescription, ct);
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullDescription, chatId, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {

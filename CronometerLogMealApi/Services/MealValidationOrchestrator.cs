@@ -19,6 +19,7 @@ public class MealValidationOrchestrator : IMealValidationOrchestrator, IAlternat
     private readonly ICronometerService _cronometerService;
     private readonly CronometerHttpClient _cronometerClient;
     private readonly IUserMemoryService? _memoryService;
+    private readonly ISessionLogService? _sessionLogService;
     private readonly ILogger<MealValidationOrchestrator> _logger;
 
     public MealValidationOrchestrator(
@@ -26,13 +27,15 @@ public class MealValidationOrchestrator : IMealValidationOrchestrator, IAlternat
         ICronometerService cronometerService,
         CronometerHttpClient cronometerClient,
         ILogger<MealValidationOrchestrator> logger,
-        IUserMemoryService? memoryService = null)
+        IUserMemoryService? memoryService = null,
+        ISessionLogService? sessionLogService = null)
     {
         _telegramService = telegramService;
         _cronometerService = cronometerService;
         _cronometerClient = cronometerClient;
         _logger = logger;
         _memoryService = memoryService;
+        _sessionLogService = sessionLogService;
     }
 
     public async Task AttemptMealLoggingAsync(
@@ -53,6 +56,8 @@ public class MealValidationOrchestrator : IMealValidationOrchestrator, IAlternat
             conversation.DetectedAliases,
             conversation.OriginalDescription,
             ct);
+
+        _sessionLogService?.LogValidation(chatId, validatedItems.Count, notFoundItems.Count, notFoundItems);
 
         if (notFoundItems.Count > 0)
         {

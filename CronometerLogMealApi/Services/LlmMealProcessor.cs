@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Clients.GeminiClient;
@@ -15,16 +16,24 @@ public class LlmMealProcessor : IMealProcessor
 {
     private readonly OpenAIHttpClient _openAIClient;
     private readonly ILogger<LlmMealProcessor> _logger;
+    private readonly ISessionLogService? _sessionLogService;
 
     public LlmMealProcessor(
         OpenAIHttpClient openAIClient,
-        ILogger<LlmMealProcessor> logger)
+        ILogger<LlmMealProcessor> logger,
+        ISessionLogService? sessionLogService = null)
     {
         _openAIClient = openAIClient;
         _logger = logger;
+        _sessionLogService = sessionLogService;
     }
 
     public async Task<MealProcessingResult> ProcessMealDescriptionAsync(string text, CancellationToken ct)
+    {
+        return await ProcessMealDescriptionAsync(text, null, ct);
+    }
+
+    public async Task<MealProcessingResult> ProcessMealDescriptionAsync(string text, string? chatId, CancellationToken ct)
     {
         // Get Venezuela time
         var venezuelaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Venezuela Standard Time");
@@ -34,11 +43,16 @@ public class LlmMealProcessor : IMealProcessor
         prompt = prompt.Replace("@Now", venezuelaNow.ToString("yyyy-MM-ddTHH:mm:ss"));
         prompt = prompt.Replace("@UserInput", text);
 
+        var sw = Stopwatch.StartNew();
         var openAIResponse = await _openAIClient.GenerateTextAsync(prompt, ct);
+        sw.Stop();
+        
         var foodInfo = openAIResponse?.Choices?.FirstOrDefault()?.Message?.Content;
 
         if (string.IsNullOrWhiteSpace(foodInfo))
         {
+            if (chatId != null)
+                _sessionLogService?.LogLlmCall(chatId, text, null, sw.ElapsedMilliseconds, false);
             return MealProcessingResult.Failed("No se pudo procesar el mensaje.");
         }
 
@@ -52,6 +66,9 @@ public class LlmMealProcessor : IMealProcessor
             {
                 PropertyNameCaseInsensitive = true
             });
+
+            if (chatId != null)
+                _sessionLogService?.LogLlmCall(chatId, text, cleanedJson, sw.ElapsedMilliseconds, response != null);
 
             if (response == null)
             {

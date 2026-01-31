@@ -68,7 +68,7 @@ public class MealDescriptionProcessor : IStateProcessor
             }
 
             // Process with LLM
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(textForLlm, ct);
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(textForLlm, context.ChatId, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {
@@ -142,7 +142,7 @@ public class MealDescriptionProcessor : IStateProcessor
                 TelegramMessages.Preferences.FormatAutoAppliedPreferences(autoAppliedAnswers), null, ct);
 
             var fullContext = ConversationContextBuilder.Build(conversation.MessageHistory);
-            var retryResult = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, ct);
+            var retryResult = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, ct);
 
             if (!retryResult.NeedsClarification && retryResult.MealRequest != null)
             {
