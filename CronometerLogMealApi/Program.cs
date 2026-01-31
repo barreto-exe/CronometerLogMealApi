@@ -124,12 +124,7 @@ builder.Services.AddTransient<IStateProcessor>(sp => sp.GetRequiredService<Alias
 
 // ===== HOSTED SERVICE (TELEGRAM POLLING) =====
 
-// Choose which polling service to use:
-// Legacy: CronometerPollingHostedService (original monolithic service)
-// New: TelegramPollingService (refactored with handlers and processors)
-builder.Services.AddHostedService<CronometerPollingHostedService>();
-// Uncomment the following line to use the new refactored service:
-// builder.Services.AddHostedService<TelegramPollingService>();
+builder.Services.AddHostedService<TelegramPollingService>();
 
 var app = builder.Build();
 

@@ -92,15 +92,6 @@ public static class TelegramMessages
                    "• Usa <b>/save</b> para guardar los cambios";
         }
 
-        public static string FormatItemUpdated(string itemsSummary)
-        {
-            return $"✅ <b>Actualizado!</b>\n\n" +
-                   $"<b>Alimentos:</b>\n{itemsSummary}\n\n" +
-                   "✏️ = modificado\n" +
-                   "🧠 = desde tu memoria\n\n" +
-                   "Usa <b>/save</b> para guardar o responde con un número para más cambios.";
-        }
-
         public static string FormatDescriptionError(string errorMessage)
         {
             return $"❌ {errorMessage}\n\nPor favor, intenta describir tu comida nuevamente.";
@@ -127,7 +118,7 @@ public static class TelegramMessages
 
         public static string FormatTextDetected(string extractedText)
         {
-            return $"📝 <b>Texto detectado:</b>\n<i>{extractedText}</i>\n\n" +
+            return $"📝 <b>Texto detectado:</b>\n<pre>{extractedText}</pre>\n\n" +
                    "✏️ Si hay algún error, escribe las correcciones.\n" +
                    "✅ Si todo está correcto, usa /continue para continuar.";
         }
@@ -289,11 +280,4 @@ public static class TelegramMessages
         }
     }
 
-    /// <summary>
-    /// General utility messages.
-    /// </summary>
-    public static class General
-    {
-        public const string InvalidNumberResponse = "Por favor, responde con un número válido o /cancel.";
-    }
 }
