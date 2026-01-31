@@ -462,6 +462,7 @@ public class CronometerService : ICronometerService
         {
             try
             {
+                // First, check if query matches an alias input term (e.g., "mi proteina")
                 var alias = await _memoryService.FindAliasAsync(userId, query, cancellationToken);
                 if (alias != null)
                 {
@@ -478,6 +479,29 @@ public class CronometerService : ICronometerService
                         SourceTab = alias.SourceTab,
                         WasFromAlias = true,
                         AliasId = alias.Id
+                    };
+                }
+
+                // Second, check if query matches an alias RESOLVED name (LLM may have already converted it)
+                var aliases = await _memoryService.GetUserAliasesAsync(userId, cancellationToken);
+                var matchingResolvedAlias = aliases.FirstOrDefault(a => 
+                    string.Equals(a.ResolvedFoodName, query, StringComparison.OrdinalIgnoreCase));
+                
+                if (matchingResolvedAlias != null)
+                {
+                    logger.LogInformation("✨ Query matches resolved alias name! '{Query}' (from alias '{InputTerm}', ID: {Id})",
+                        query, matchingResolvedAlias.InputTerm, matchingResolvedAlias.ResolvedFoodId);
+
+                    // Increment usage
+                    await _memoryService.IncrementAliasUsageAsync(matchingResolvedAlias.Id, cancellationToken);
+
+                    return new FoodSearchResult
+                    {
+                        FoodId = matchingResolvedAlias.ResolvedFoodId,
+                        FoodName = matchingResolvedAlias.ResolvedFoodName,
+                        SourceTab = matchingResolvedAlias.SourceTab,
+                        WasFromAlias = true,
+                        AliasId = matchingResolvedAlias.Id
                     };
                 }
             }

@@ -55,9 +55,6 @@ public class MealDescriptionProcessor : IStateProcessor
         {
             // Fetch all user preferences for the LLM prompt
             string? userPreferences = null;
-            List<FoodAlias>? aliases = null;
-            List<ClarificationPreference>? clarificationPrefs = null;
-            List<MeasurePreference>? measurePrefs = null;
 
             if (_memoryService != null)
             {
@@ -68,31 +65,17 @@ public class MealDescriptionProcessor : IStateProcessor
 
                 await Task.WhenAll(aliasesTask, clarificationPrefsTask, measurePrefsTask);
 
-                aliases = await aliasesTask;
-                clarificationPrefs = await clarificationPrefsTask;
-                measurePrefs = await measurePrefsTask;
+                var aliases = await aliasesTask;
+                var clarificationPrefs = await clarificationPrefsTask;
+                var measurePrefs = await measurePrefsTask;
 
                 userPreferences = FormatPreferencesForPrompt(aliases, clarificationPrefs, measurePrefs);
                 _logger.LogInformation("Formatted user preferences for LLM: {Preferences}", userPreferences);
             }
 
-            // Detect and replace aliases before sending to LLM
-            var textForLlm = text;
-            if (_memoryService != null && aliases != null)
-            {
-                var detectedAliases = await _memoryService.DetectAliasesInTextAsync(context.ChatId, text, ct);
-                conversation.DetectedAliases = detectedAliases;
-
-                if (detectedAliases.Count > 0)
-                {
-                    _logger.LogInformation("Detected {Count} aliases in user input", detectedAliases.Count);
-                    textForLlm = ReplaceAliasesInText(text, detectedAliases);
-                    _logger.LogInformation("Text after alias replacement: '{Text}'", textForLlm);
-                }
-            }
-
-            // Process with LLM (now with user preferences)
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(textForLlm, context.ChatId, userPreferences, ct);
+            // Process with LLM - user preferences (including aliases) are in the prompt
+            // CronometerService.GetFoodWithMemoryAsync will also catch aliases during validation as a fallback
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(text, context.ChatId, userPreferences, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {
@@ -193,23 +176,6 @@ public class MealDescriptionProcessor : IStateProcessor
             await _telegramService.SendMessageAsync(context.ChatId,
                 TelegramMessages.Meal.NeedsClarificationPrefix + clarificationMessage, "HTML", ct);
         }
-    }
-
-    private static string ReplaceAliasesInText(string text, List<DetectedAlias> detectedAliases)
-    {
-        if (detectedAliases.Count == 0) return text;
-
-        var sortedAliases = detectedAliases.OrderByDescending(a => a.StartIndex).ToList();
-        var result = text;
-
-        foreach (var detected in sortedAliases)
-        {
-            var before = result.Substring(0, detected.StartIndex);
-            var after = result.Substring(detected.StartIndex + detected.Length);
-            result = before + detected.Alias.ResolvedFoodName + after;
-        }
-
-        return result;
     }
 
     /// <summary>
