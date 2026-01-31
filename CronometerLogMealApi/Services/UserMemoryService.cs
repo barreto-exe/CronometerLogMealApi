@@ -295,10 +295,10 @@ public class UserMemoryService : IUserMemoryService
     /// </summary>
     public async Task<List<MeasurePreference>> GetUserPreferencesAsync(string userId, CancellationToken ct = default)
     {
+        // Query without OrderByDescending to avoid needing a composite index
         var query = _db.Collection(PreferencesCollection)
             .WhereEqualTo("userId", userId)
-            .WhereEqualTo("isActive", true)
-            .OrderByDescending("useCount");
+            .WhereEqualTo("isActive", true);
 
         var snapshot = await query.GetSnapshotAsync(ct);
 
@@ -309,7 +309,16 @@ public class UserMemoryService : IUserMemoryService
                 pref.Id = doc.Id;
                 return pref;
             })
+            .OrderByDescending(p => p.UseCount) // Sort in memory instead
             .ToList();
+    }
+
+    /// <summary>
+    /// Gets all active measure preferences for a user (interface implementation).
+    /// </summary>
+    public Task<List<MeasurePreference>> GetUserMeasurePreferencesAsync(string userId, CancellationToken ct = default)
+    {
+        return GetUserPreferencesAsync(userId, ct);
     }
 
     /// <summary>

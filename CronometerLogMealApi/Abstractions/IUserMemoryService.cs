@@ -74,6 +74,24 @@ public interface IUserMemoryService
         string answer,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Gets all confirmed clarification preferences for a user.
+    /// </summary>
+    Task<List<ClarificationPreference>> GetUserClarificationPreferencesAsync(
+        string userId,
+        CancellationToken ct = default);
+
+    #endregion
+
+    #region Measure Preferences
+
+    /// <summary>
+    /// Gets all measure preferences for a user.
+    /// </summary>
+    Task<List<MeasurePreference>> GetUserMeasurePreferencesAsync(
+        string userId,
+        CancellationToken ct = default);
+
     #endregion
 
     #region Sessions

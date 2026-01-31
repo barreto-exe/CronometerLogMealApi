@@ -3,6 +3,7 @@ using CronometerLogMealApi.Constants;
 using CronometerLogMealApi.Models;
 using CronometerLogMealApi.Models.UserMemory;
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 namespace CronometerLogMealApi.Handlers.StateProcessors;
 
@@ -52,9 +53,32 @@ public class MealDescriptionProcessor : IStateProcessor
 
         try
         {
+            // Fetch all user preferences for the LLM prompt
+            string? userPreferences = null;
+            List<FoodAlias>? aliases = null;
+            List<ClarificationPreference>? clarificationPrefs = null;
+            List<MeasurePreference>? measurePrefs = null;
+
+            if (_memoryService != null)
+            {
+                // Fetch all preferences in parallel
+                var aliasesTask = _memoryService.GetUserAliasesAsync(context.ChatId, ct);
+                var clarificationPrefsTask = _memoryService.GetUserClarificationPreferencesAsync(context.ChatId, ct);
+                var measurePrefsTask = _memoryService.GetUserMeasurePreferencesAsync(context.ChatId, ct);
+
+                await Task.WhenAll(aliasesTask, clarificationPrefsTask, measurePrefsTask);
+
+                aliases = await aliasesTask;
+                clarificationPrefs = await clarificationPrefsTask;
+                measurePrefs = await measurePrefsTask;
+
+                userPreferences = FormatPreferencesForPrompt(aliases, clarificationPrefs, measurePrefs);
+                _logger.LogInformation("Formatted user preferences for LLM: {Preferences}", userPreferences);
+            }
+
             // Detect and replace aliases before sending to LLM
             var textForLlm = text;
-            if (_memoryService != null)
+            if (_memoryService != null && aliases != null)
             {
                 var detectedAliases = await _memoryService.DetectAliasesInTextAsync(context.ChatId, text, ct);
                 conversation.DetectedAliases = detectedAliases;
@@ -67,8 +91,8 @@ public class MealDescriptionProcessor : IStateProcessor
                 }
             }
 
-            // Process with LLM
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(textForLlm, context.ChatId, ct);
+            // Process with LLM (now with user preferences)
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(textForLlm, context.ChatId, userPreferences, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {
@@ -186,5 +210,64 @@ public class MealDescriptionProcessor : IStateProcessor
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Formats all user preferences into a string for the LLM prompt.
+    /// </summary>
+    private static string FormatPreferencesForPrompt(
+        List<FoodAlias>? aliases,
+        List<ClarificationPreference>? clarificationPrefs,
+        List<MeasurePreference>? measurePrefs)
+    {
+        var sb = new StringBuilder();
+        var hasPreferences = false;
+
+        // Food Aliases section
+        if (aliases != null && aliases.Count > 0)
+        {
+            hasPreferences = true;
+            sb.AppendLine("FOOD ALIASES (use the resolved name when the user mentions the input term):");
+            foreach (var alias in aliases.Take(20)) // Limit to avoid prompt bloat
+            {
+                sb.AppendLine($"  - \"{alias.InputTerm}\" → \"{alias.ResolvedFoodName}\"");
+            }
+            sb.AppendLine();
+        }
+
+        // Clarification Preferences section
+        if (clarificationPrefs != null && clarificationPrefs.Count > 0)
+        {
+            hasPreferences = true;
+            sb.AppendLine("CLARIFICATION PREFERENCES (apply these defaults, do NOT ask again):");
+            foreach (var pref in clarificationPrefs.Take(20))
+            {
+                var clarificationTypeDescription = pref.ClarificationType switch
+                {
+                    "MISSING_SIZE" or "MissingSize" => "size",
+                    "MISSING_WEIGHT" or "MissingWeight" => "weight",
+                    "AMBIGUOUS_UNIT" or "AmbiguousUnit" => "unit type",
+                    "UNCLEAR_FOOD" or "FoodNotFound" => "food type",
+                    _ => "default"
+                };
+                sb.AppendLine($"  - When \"{pref.FoodTerm}\" {clarificationTypeDescription} is unclear → use \"{pref.DefaultAnswer}\"");
+            }
+            sb.AppendLine();
+        }
+
+        // Measure Preferences section
+        if (measurePrefs != null && measurePrefs.Count > 0)
+        {
+            hasPreferences = true;
+            sb.AppendLine("MEASURE PREFERENCES (use these default units/quantities when not specified):");
+            foreach (var pref in measurePrefs.Take(20))
+            {
+                var quantityStr = pref.PreferredQuantity.HasValue ? $"{pref.PreferredQuantity.Value} " : "";
+                sb.AppendLine($"  - \"{pref.FoodNamePattern}\" → default: {quantityStr}{pref.PreferredUnit}");
+            }
+            sb.AppendLine();
+        }
+
+        return hasPreferences ? sb.ToString().TrimEnd() : "No saved preferences for this user.";
     }
 }

@@ -184,6 +184,18 @@ public static class GeminiPrompts
         - DO NOT ask for the same information again if it was already answered
         - Only ask for clarification if something NEW is still unclear
 
+        USER PREFERENCES (CRITICAL - Apply these automatically WITHOUT asking for clarification):
+        The following are the user's saved preferences. You MUST apply them automatically:
+        
+        @UserPreferences
+        
+        Rules for applying preferences:
+        1. If a food alias exists (e.g., "pollo" → "Chicken Breast, Raw"), use the resolved name in the output.
+        2. If a clarification preference exists (e.g., "huevos" size → "grande"), apply it directly without asking.
+        3. If a measure preference exists (e.g., "arroz" → always "grams"), use that unit.
+        4. NEVER ask for clarification on items that have saved preferences - apply them silently.
+        5. If no preferences match an item, then you may ask for clarification as normal.
+
         TODAY'S DATE: @Now
         USER INPUT:
         @UserInput

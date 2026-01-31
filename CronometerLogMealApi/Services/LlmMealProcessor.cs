@@ -30,10 +30,15 @@ public class LlmMealProcessor : IMealProcessor
 
     public async Task<MealProcessingResult> ProcessMealDescriptionAsync(string text, CancellationToken ct)
     {
-        return await ProcessMealDescriptionAsync(text, null, ct);
+        return await ProcessMealDescriptionAsync(text, null, null, ct);
     }
 
     public async Task<MealProcessingResult> ProcessMealDescriptionAsync(string text, string? chatId, CancellationToken ct)
+    {
+        return await ProcessMealDescriptionAsync(text, chatId, null, ct);
+    }
+
+    public async Task<MealProcessingResult> ProcessMealDescriptionAsync(string text, string? chatId, string? userPreferences, CancellationToken ct)
     {
         // Get Venezuela time
         var venezuelaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Venezuela Standard Time");
@@ -42,6 +47,7 @@ public class LlmMealProcessor : IMealProcessor
         var prompt = GeminiPrompts.CronometerPrompt;
         prompt = prompt.Replace("@Now", venezuelaNow.ToString("yyyy-MM-ddTHH:mm:ss"));
         prompt = prompt.Replace("@UserInput", text);
+        prompt = prompt.Replace("@UserPreferences", userPreferences ?? "No saved preferences for this user.");
 
         var sw = Stopwatch.StartNew();
         var openAIResponse = await _openAIClient.GenerateTextAsync(prompt, ct);
