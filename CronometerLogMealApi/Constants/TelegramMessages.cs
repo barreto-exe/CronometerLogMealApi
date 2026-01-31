@@ -118,7 +118,7 @@ public static class TelegramMessages
 
         public static string FormatDetectedTextOnly(string extractedText)
         {
-            return $"<pre>{extractedText}</pre>";
+            return $"```\n{extractedText}\n```";
         }
 
         public const string TextDetectedInstructions = "📝 <b>Texto detectado arriba ☝️</b>\n\n" +

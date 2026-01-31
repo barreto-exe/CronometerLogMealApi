@@ -299,9 +299,9 @@ public class TelegramPollingService : BackgroundService
 
             userInfo.Conversation.OcrExtractedText = extractedText;
 
-            // Send detected text alone (easy to copy on mobile)
+            // Send detected text in code block (shows frame, easy to copy on mobile)
             await _telegramService.SendMessageAsync(chatId,
-                TelegramMessages.Ocr.FormatDetectedTextOnly(extractedText), null, ct);
+                TelegramMessages.Ocr.FormatDetectedTextOnly(extractedText), "Markdown", ct);
             
             // Send instructions separately
             await _telegramService.SendMessageAsync(chatId,
