@@ -1,3 +1,4 @@
+using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Clients.CronometerClient;
 using CronometerLogMealApi.Clients.CronometerClient.Models;
 using CronometerLogMealApi.Clients.CronometerClient.Requests;
@@ -10,7 +11,11 @@ using System.Text.Json;
 
 namespace CronometerLogMealApi.Services;
 
-public class CronometerService
+/// <summary>
+/// Service for Cronometer food logging operations.
+/// Implements ICronometerService for dependency injection.
+/// </summary>
+public class CronometerService : ICronometerService
 {
     private readonly CronometerHttpClient cronometerHttpClient;
     private readonly ILogger<CronometerService> logger;
@@ -435,19 +440,6 @@ public class CronometerService
         }
 
         return (validatedItems, notFoundItems);
-    }
-
-    /// <summary>
-    /// Result of a food search operation.
-    /// </summary>
-    public class FoodSearchResult
-    {
-        public long FoodId { get; set; }
-        public string FoodName { get; set; } = string.Empty;
-        public string SourceTab { get; set; } = string.Empty;
-        public bool WasFromAlias { get; set; }
-        public string? AliasId { get; set; }
-        public List<SearchCandidate> AllCandidates { get; set; } = new();
     }
 
     /// <summary>

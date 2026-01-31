@@ -1,12 +1,17 @@
 using System.Threading;
 using System.Threading.Tasks;
+using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Clients.TelegramClient;
 using CronometerLogMealApi.Clients.TelegramClient.Models;
 using CronometerLogMealApi.Clients.TelegramClient.Requests;
 
 namespace CronometerLogMealApi.Services;
 
-public class TelegramService
+/// <summary>
+/// Service for Telegram messaging operations.
+/// Implements ITelegramService for dependency injection.
+/// </summary>
+public class TelegramService : ITelegramService
 {
     private readonly TelegramHttpClient _telegram;
     private readonly ILogger<TelegramService> _logger;

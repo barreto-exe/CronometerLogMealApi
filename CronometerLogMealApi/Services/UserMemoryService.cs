@@ -1,3 +1,4 @@
+using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Models.UserMemory;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
@@ -10,8 +11,9 @@ namespace CronometerLogMealApi.Services;
 
 /// <summary>
 /// Service for managing user memory (aliases and preferences) using Firebase Firestore.
+/// Implements IUserMemoryService for dependency injection.
 /// </summary>
-public class UserMemoryService
+public class UserMemoryService : IUserMemoryService
 {
     private readonly FirestoreDb _db;
     private readonly ILogger<UserMemoryService> _logger;
