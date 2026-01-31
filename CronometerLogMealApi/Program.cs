@@ -122,6 +122,9 @@ builder.Services.AddTransient<IStateProcessor>(sp => sp.GetRequiredService<FoodS
 builder.Services.AddTransient<AliasDeleteConfirmProcessor>();
 builder.Services.AddTransient<IStateProcessor>(sp => sp.GetRequiredService<AliasDeleteConfirmProcessor>());
 
+builder.Services.AddTransient<FoodSearchSelectionProcessor>();
+builder.Services.AddTransient<IStateProcessor>(sp => sp.GetRequiredService<FoodSearchSelectionProcessor>());
+
 // ===== HOSTED SERVICE (TELEGRAM POLLING) =====
 
 builder.Services.AddHostedService<TelegramPollingService>();

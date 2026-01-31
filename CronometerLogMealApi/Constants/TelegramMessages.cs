@@ -248,6 +248,7 @@ public static class TelegramMessages
         public const string Error = "❌ Error al buscar. Intenta de nuevo.";
         public const string AlternativesError = "❌ Error al buscar alternativas. Intenta de nuevo.";
         public const string NoAlternatives = "No hay alternativas disponibles. Intenta escribir un nombre diferente.";
+        public const string InvalidSelection = "⚠️ Por favor, responde con un número válido de la lista, o /cancel para mantener el actual.";
 
         public static string FormatNoResults(string query)
         {
