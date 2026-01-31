@@ -116,12 +116,14 @@ public static class TelegramMessages
         public const string ContinueOnlyAfterPhoto = "⚠️ Este comando solo se puede usar después de enviar una foto para confirmar el texto detectado.";
         public const string OcrProcessingError = "❌ Ocurrió un error al procesar. Por favor, intenta de nuevo.";
 
-        public static string FormatTextDetected(string extractedText)
+        public static string FormatDetectedTextOnly(string extractedText)
         {
-            return $"📝 <b>Texto detectado:</b>\n<pre>{extractedText}</pre>\n\n" +
-                   "✏️ Si hay algún error, escribe las correcciones.\n" +
-                   "✅ Si todo está correcto, usa /continue para continuar.";
+            return $"<pre>{extractedText}</pre>";
         }
+
+        public const string TextDetectedInstructions = "📝 <b>Texto detectado arriba ☝️</b>\n\n" +
+            "✏️ Si hay algún error, escribe las correcciones.\n" +
+            "✅ Si todo está correcto, usa /continue para continuar.";
     }
 
     /// <summary>

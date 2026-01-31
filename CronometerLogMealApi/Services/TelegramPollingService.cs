@@ -299,8 +299,13 @@ public class TelegramPollingService : BackgroundService
 
             userInfo.Conversation.OcrExtractedText = extractedText;
 
+            // Send detected text alone (easy to copy on mobile)
             await _telegramService.SendMessageAsync(chatId,
-                TelegramMessages.Ocr.FormatTextDetected(extractedText), "HTML", ct);
+                TelegramMessages.Ocr.FormatDetectedTextOnly(extractedText), null, ct);
+            
+            // Send instructions separately
+            await _telegramService.SendMessageAsync(chatId,
+                TelegramMessages.Ocr.TextDetectedInstructions, "HTML", ct);
         }
         catch (Exception ex)
         {
