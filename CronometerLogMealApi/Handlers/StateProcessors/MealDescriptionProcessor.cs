@@ -15,6 +15,7 @@ public class MealDescriptionProcessor : IStateProcessor
     private readonly ITelegramService _telegramService;
     private readonly IMealProcessor _mealProcessor;
     private readonly IUserMemoryService? _memoryService;
+    private readonly ISessionLogService? _sessionLogService;
     private readonly IMealValidationOrchestrator _validationOrchestrator;
     private readonly ILogger<MealDescriptionProcessor> _logger;
 
@@ -25,13 +26,15 @@ public class MealDescriptionProcessor : IStateProcessor
         IMealProcessor mealProcessor,
         IMealValidationOrchestrator validationOrchestrator,
         ILogger<MealDescriptionProcessor> logger,
-        IUserMemoryService? memoryService = null)
+        IUserMemoryService? memoryService = null,
+        ISessionLogService? sessionLogService = null)
     {
         _telegramService = telegramService;
         _mealProcessor = mealProcessor;
         _validationOrchestrator = validationOrchestrator;
         _logger = logger;
         _memoryService = memoryService;
+        _sessionLogService = sessionLogService;
     }
 
     public async Task ProcessAsync(StateContext context, CancellationToken ct)
@@ -97,6 +100,7 @@ public class MealDescriptionProcessor : IStateProcessor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing meal description for chatId {ChatId}", context.ChatId);
+            _sessionLogService?.LogError(context.ChatId, ex.Message, ex.GetType().Name, ex.StackTrace);
             conversation.State = ConversationState.AwaitingMealDescription;
             await _telegramService.SendMessageAsync(context.ChatId,
                 TelegramMessages.Meal.ProcessingError, null, ct);
