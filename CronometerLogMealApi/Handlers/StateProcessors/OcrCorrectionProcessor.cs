@@ -1,5 +1,6 @@
 using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Constants;
+using CronometerLogMealApi.Helpers;
 using CronometerLogMealApi.Models;
 using Microsoft.Extensions.Logging;
 
@@ -12,6 +13,7 @@ public class OcrCorrectionProcessor : IStateProcessor
 {
     private readonly ITelegramService _telegramService;
     private readonly IMealProcessor _mealProcessor;
+    private readonly IUserMemoryService? _memoryService;
     private readonly IMealValidationOrchestrator _validationOrchestrator;
     private readonly ILogger<OcrCorrectionProcessor> _logger;
 
@@ -21,12 +23,14 @@ public class OcrCorrectionProcessor : IStateProcessor
         ITelegramService telegramService,
         IMealProcessor mealProcessor,
         IMealValidationOrchestrator validationOrchestrator,
-        ILogger<OcrCorrectionProcessor> logger)
+        ILogger<OcrCorrectionProcessor> logger,
+        IUserMemoryService? memoryService = null)
     {
         _telegramService = telegramService;
         _mealProcessor = mealProcessor;
         _validationOrchestrator = validationOrchestrator;
         _logger = logger;
+        _memoryService = memoryService;
     }
 
     public async Task ProcessAsync(StateContext context, CancellationToken ct)
@@ -80,7 +84,9 @@ public class OcrCorrectionProcessor : IStateProcessor
                 Timestamp = DateTime.UtcNow
             });
 
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullDescription, chatId, ct);
+            // Load user preferences for the LLM prompt
+            var userPreferences = await UserPreferencesHelper.LoadFormattedPreferencesAsync(_memoryService, chatId, ct);
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullDescription, chatId, userPreferences, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {

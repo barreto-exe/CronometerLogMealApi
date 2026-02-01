@@ -1,5 +1,6 @@
 using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Constants;
+using CronometerLogMealApi.Helpers;
 using CronometerLogMealApi.Models;
 using Microsoft.Extensions.Logging;
 
@@ -12,6 +13,7 @@ public class ConfirmationProcessor : IStateProcessor
 {
     private readonly ITelegramService _telegramService;
     private readonly IMealProcessor _mealProcessor;
+    private readonly IUserMemoryService? _memoryService;
     private readonly IMealValidationOrchestrator _validationOrchestrator;
     private readonly IAlternativeSearchHandler _alternativeSearchHandler;
     private readonly ILogger<ConfirmationProcessor> _logger;
@@ -23,13 +25,15 @@ public class ConfirmationProcessor : IStateProcessor
         IMealProcessor mealProcessor,
         IMealValidationOrchestrator validationOrchestrator,
         IAlternativeSearchHandler alternativeSearchHandler,
-        ILogger<ConfirmationProcessor> logger)
+        ILogger<ConfirmationProcessor> logger,
+        IUserMemoryService? memoryService = null)
     {
         _telegramService = telegramService;
         _mealProcessor = mealProcessor;
         _validationOrchestrator = validationOrchestrator;
         _alternativeSearchHandler = alternativeSearchHandler;
         _logger = logger;
+        _memoryService = memoryService;
     }
 
     public async Task ProcessAsync(StateContext context, CancellationToken ct)
@@ -62,7 +66,9 @@ public class ConfirmationProcessor : IStateProcessor
         try
         {
             var fullContext = ConversationContextBuilder.Build(conversation.MessageHistory);
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, ct);
+            // Load user preferences for the LLM prompt
+            var userPreferences = await UserPreferencesHelper.LoadFormattedPreferencesAsync(_memoryService, context.ChatId, ct);
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, userPreferences, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {

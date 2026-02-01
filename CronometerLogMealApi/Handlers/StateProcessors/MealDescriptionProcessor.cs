@@ -1,9 +1,8 @@
 using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Constants;
+using CronometerLogMealApi.Helpers;
 using CronometerLogMealApi.Models;
-using CronometerLogMealApi.Models.UserMemory;
 using Microsoft.Extensions.Logging;
-using System.Text;
 
 namespace CronometerLogMealApi.Handlers.StateProcessors;
 
@@ -57,22 +56,9 @@ public class MealDescriptionProcessor : IStateProcessor
         try
         {
             // Fetch all user preferences for the LLM prompt
-            string? userPreferences = null;
-
-            if (_memoryService != null)
+            var userPreferences = await UserPreferencesHelper.LoadFormattedPreferencesAsync(_memoryService, context.ChatId, ct);
+            if (userPreferences != null)
             {
-                // Fetch all preferences in parallel
-                var aliasesTask = _memoryService.GetUserAliasesAsync(context.ChatId, ct);
-                var clarificationPrefsTask = _memoryService.GetUserClarificationPreferencesAsync(context.ChatId, ct);
-                var measurePrefsTask = _memoryService.GetUserMeasurePreferencesAsync(context.ChatId, ct);
-
-                await Task.WhenAll(aliasesTask, clarificationPrefsTask, measurePrefsTask);
-
-                var aliases = await aliasesTask;
-                var clarificationPrefs = await clarificationPrefsTask;
-                var measurePrefs = await measurePrefsTask;
-
-                userPreferences = FormatPreferencesForPrompt(aliases, clarificationPrefs, measurePrefs);
                 _logger.LogInformation("Formatted user preferences for LLM: {Preferences}", userPreferences);
             }
 
@@ -153,7 +139,8 @@ public class MealDescriptionProcessor : IStateProcessor
                 TelegramMessages.Preferences.FormatAutoAppliedPreferences(autoAppliedAnswers), null, ct);
 
             var fullContext = ConversationContextBuilder.Build(conversation.MessageHistory);
-            var retryResult = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, ct);
+            var retryUserPreferences = await UserPreferencesHelper.LoadFormattedPreferencesAsync(_memoryService, context.ChatId, ct);
+            var retryResult = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, retryUserPreferences, ct);
 
             if (!retryResult.NeedsClarification && retryResult.MealRequest != null)
             {
@@ -180,64 +167,5 @@ public class MealDescriptionProcessor : IStateProcessor
             await _telegramService.SendMessageAsync(context.ChatId,
                 TelegramMessages.Meal.NeedsClarificationPrefix + clarificationMessage, "HTML", ct);
         }
-    }
-
-    /// <summary>
-    /// Formats all user preferences into a string for the LLM prompt.
-    /// </summary>
-    private static string FormatPreferencesForPrompt(
-        List<FoodAlias>? aliases,
-        List<ClarificationPreference>? clarificationPrefs,
-        List<MeasurePreference>? measurePrefs)
-    {
-        var sb = new StringBuilder();
-        var hasPreferences = false;
-
-        // Food Aliases section
-        if (aliases != null && aliases.Count > 0)
-        {
-            hasPreferences = true;
-            sb.AppendLine("FOOD ALIASES (use the resolved name when the user mentions the input term):");
-            foreach (var alias in aliases.Take(20)) // Limit to avoid prompt bloat
-            {
-                sb.AppendLine($"  - \"{alias.InputTerm}\" → \"{alias.ResolvedFoodName}\"");
-            }
-            sb.AppendLine();
-        }
-
-        // Clarification Preferences section
-        if (clarificationPrefs != null && clarificationPrefs.Count > 0)
-        {
-            hasPreferences = true;
-            sb.AppendLine("CLARIFICATION PREFERENCES (apply these defaults, do NOT ask again):");
-            foreach (var pref in clarificationPrefs.Take(20))
-            {
-                var clarificationTypeDescription = pref.ClarificationType switch
-                {
-                    "MISSING_SIZE" or "MissingSize" => "size",
-                    "MISSING_WEIGHT" or "MissingWeight" => "weight",
-                    "AMBIGUOUS_UNIT" or "AmbiguousUnit" => "unit type",
-                    "UNCLEAR_FOOD" or "FoodNotFound" => "food type",
-                    _ => "default"
-                };
-                sb.AppendLine($"  - When \"{pref.FoodTerm}\" {clarificationTypeDescription} is unclear → use \"{pref.DefaultAnswer}\"");
-            }
-            sb.AppendLine();
-        }
-
-        // Measure Preferences section
-        if (measurePrefs != null && measurePrefs.Count > 0)
-        {
-            hasPreferences = true;
-            sb.AppendLine("MEASURE PREFERENCES (use these default units/quantities when not specified):");
-            foreach (var pref in measurePrefs.Take(20))
-            {
-                var quantityStr = pref.PreferredQuantity.HasValue ? $"{pref.PreferredQuantity.Value} " : "";
-                sb.AppendLine($"  - \"{pref.FoodNamePattern}\" → default: {quantityStr}{pref.PreferredUnit}");
-            }
-            sb.AppendLine();
-        }
-
-        return hasPreferences ? sb.ToString().TrimEnd() : "No saved preferences for this user.";
     }
 }

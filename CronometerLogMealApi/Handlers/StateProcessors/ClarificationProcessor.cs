@@ -1,5 +1,6 @@
 using CronometerLogMealApi.Abstractions;
 using CronometerLogMealApi.Constants;
+using CronometerLogMealApi.Helpers;
 using CronometerLogMealApi.Models;
 using Microsoft.Extensions.Logging;
 
@@ -56,7 +57,9 @@ public class ClarificationProcessor : IStateProcessor
         try
         {
             var fullContext = ConversationContextBuilder.Build(conversation.MessageHistory);
-            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, ct);
+            // Load user preferences for the LLM prompt
+            var userPreferences = await UserPreferencesHelper.LoadFormattedPreferencesAsync(_memoryService, context.ChatId, ct);
+            var result = await _mealProcessor.ProcessMealDescriptionAsync(fullContext, context.ChatId, userPreferences, ct);
 
             if (!string.IsNullOrEmpty(result.ErrorMessage))
             {
