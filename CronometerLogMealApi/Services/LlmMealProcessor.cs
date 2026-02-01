@@ -58,7 +58,10 @@ public class LlmMealProcessor : IMealProcessor
         if (string.IsNullOrWhiteSpace(foodInfo))
         {
             if (chatId != null)
-                _sessionLogService?.LogLlmCall(chatId, text, null, sw.ElapsedMilliseconds, false);
+            {
+                string logText = text + ' ' + userPreferences;
+                _sessionLogService?.LogLlmCall(chatId, logText, null, sw.ElapsedMilliseconds, false);
+            }
             return MealProcessingResult.Failed("No se pudo procesar el mensaje.");
         }
 
@@ -74,7 +77,10 @@ public class LlmMealProcessor : IMealProcessor
             });
 
             if (chatId != null)
-                _sessionLogService?.LogLlmCall(chatId, text, cleanedJson, sw.ElapsedMilliseconds, response != null);
+            {
+                string logText = text + ' ' + userPreferences;
+                _sessionLogService?.LogLlmCall(chatId, logText, cleanedJson, sw.ElapsedMilliseconds, response != null);
+            }
 
             if (response == null)
             {
