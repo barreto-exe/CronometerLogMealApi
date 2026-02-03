@@ -40,10 +40,11 @@ public static class GeminiPrompts
         Clarification Rules:
         Set "needsClarification" to true and add items to "clarifications" when:
         
-        1. MISSING_SIZE: Items like eggs, fruits, or vegetables without size specification.
+        1. MISSING_SIZE: Items like eggs, fruits, or vegetables WITHOUT size specification AND WITHOUT weight (grams).
            - "4 huevos" → needs size (pequeño/mediano/grande)
            - "una manzana" → needs size
            - "un aguacate" → needs size
+           IMPORTANT: If the user provides grams (e.g., "30g de aguacate", "50 aguacate" inferred as grams), DO NOT ask for size.
         
         2. MISSING_WEIGHT: Items without quantity or weight when weight matters.
            - "arroz" without grams or cups
@@ -98,6 +99,16 @@ public static class GeminiPrompts
         taza, tazas -> "cup"
         mililitros, ml -> "ml"
         cabeza de ajo -> "clove"
+
+        INFERENCE RULES (when unit is NOT specified):
+        1. If the item is "huevos" (eggs), infer "unit".
+        2. If the item is a fruit, vegetable, or generic food (like aguacate/avocado, zanahoria/carrot, arroz/rice, carne/meat) AND the number matches a weight context (usually >= 10), infer "grams".
+           Examples:
+           - "30 aguacate" -> 30 grams
+           - "70 zanahoria" -> 70 grams
+           - "120 arroz" -> 120 grams
+           IMPORTANT: If grams are inferred, do NOT trigger MISSING_SIZE clarification.
+        3. If the item is a countable whole food (like apple, banana) and number is < 10, infer "unit".
 
         name (string): IMPORTANT RULES FOR FOOD NAMES:
         1. If the food name looks like a BRAND NAME or CUSTOM FOOD (e.g., "Emmanuel, Queso Mozzarella", "Nestle Cereal", "PAN Cachapas"), 
